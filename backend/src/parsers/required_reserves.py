@@ -10,7 +10,7 @@ from zipfile import ZipFile
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 RAW_FILE = PROJECT_ROOT / "data/raw/m1_required_reserves/required_reserves_table.xlsx"
-OUTPUT_FILE = PROJECT_ROOT / "data/processed/m1_required_reserves.csv"
+OUTPUT_FILE = PROJECT_ROOT / "data/processed/required_reserves.csv"
 SHEET_NAME = "Обязательные резервы"
 
 HEADER_ROW = 3
