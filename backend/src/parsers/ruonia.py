@@ -8,7 +8,7 @@ from zipfile import ZipFile
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-RAW_FILE = PROJECT_ROOT / "data/raw/ruonia/RC_F01_04_2010_T07_05_2026.xlsx"
+RAW_FILE = PROJECT_ROOT / "data/raw/ruonia/ruonia.xlsx"
 OUTPUT_FILE = PROJECT_ROOT / "data/processed/ruonia.csv"
 SHEET_NAME = "RC"
 
