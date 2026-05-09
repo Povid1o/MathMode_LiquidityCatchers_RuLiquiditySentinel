@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import csv
-import re
 import xml.etree.ElementTree as ET
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -9,12 +8,12 @@ from zipfile import ZipFile
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-RAW_FILE = PROJECT_ROOT / "data/raw/required_reserves/required_reserves_table.xlsx"
-OUTPUT_FILE = PROJECT_ROOT / "data/processed/required_reserves.csv"
-SHEET_NAME = "Обязательные резервы"
+RAW_FILE = PROJECT_ROOT / "data/raw/ruonia/RC_F01_04_2010_T07_05_2026.xlsx"
+OUTPUT_FILE = PROJECT_ROOT / "data/processed/ruonia.csv"
+SHEET_NAME = "RC"
 
-HEADER_ROW = 3
-FIRST_DATA_ROW = 4
+HEADER_ROW = 1
+FIRST_DATA_ROW = 2
 
 NS = {
     "main": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
@@ -23,28 +22,14 @@ NS = {
 }
 
 HEADER_TO_FIELD = {
-    "период усреднения обязательных резервов": "date",
-    "фактические среднедневные остатки средств на корсчетах": "actual_balances",
-    "обязательные резервы подлежащие усреднению на корсчетах": "required_reserves_avg",
-    "число календарных дней в периоде усреднения обязательных резервов": "averaging_period_days",
+    "DT": "date",
+    "ruo": "ruonia_rate",
 }
 
 OUTPUT_COLUMNS = [
     "date",
-    "actual_balances",
-    "required_reserves_avg",
-    "averaging_period_days",
-    "spread",
+    "ruonia_rate",
 ]
-
-
-def _normalize_text(value: object) -> str:
-    """Нормализует текст для поиска нужных заголовков"""
-    text = "" if value is None else str(value)
-    text = re.sub(r"\d+", "", text)
-    text = re.sub(r"[^\w\s]", " ", text, flags=re.UNICODE)
-    text = re.sub(r"\s+", " ", text.replace("\xa0", " ")).strip().lower()
-    return text
 
 
 def _column_name(cell_ref: str) -> str:
@@ -65,30 +50,34 @@ def _format_date(value: date) -> str:
     return value.strftime("%d-%m-%Y")
 
 
-def _excel_date_to_string(value: object) -> str | None:
-    """Преобразует дату Excel в строку формата DD-MM-YYYY"""
+def _excel_date_to_date(value: object) -> date | None:
+    """Преобразует дату Excel в объект date"""
     if isinstance(value, datetime):
-        return _format_date(value.date())
+        return value.date()
     if isinstance(value, date):
-        return _format_date(value)
+        return value
 
     if isinstance(value, (int, float)):
-        excel_date = date(1899, 12, 30) + timedelta(days=int(value))
-        return _format_date(excel_date)
+        return date(1899, 12, 30) + timedelta(days=int(value))
 
     if isinstance(value, str):
         text = value.strip()
         if not text:
             return None
 
-        for fmt in ("%d.%m.%Y", "%Y-%m-%d"):
+        for fmt in ("%d.%m.%Y", "%Y-%m-%d", "%d-%m-%Y"):
             try:
-                parsed_date = datetime.strptime(text[:10], fmt).date()
-                return _format_date(parsed_date)
+                return datetime.strptime(text[:10], fmt).date()
             except ValueError:
                 pass
 
     return None
+
+
+def _date_sort_key(date_text: object) -> str:
+    """Готовит строковую дату DD-MM-YYYY для сортировки"""
+    text = str(date_text)
+    return text[6:10] + text[3:5] + text[:2]
 
 
 def _to_float(value: object) -> float | None:
@@ -103,14 +92,6 @@ def _to_float(value: object) -> float | None:
         return float(text)
     except ValueError:
         return None
-
-
-def _to_int(value: object) -> int | None:
-    """Преобразует значение в int"""
-    number = _to_float(value)
-    if number is None:
-        return None
-    return int(number)
 
 
 def _read_shared_strings(xlsx: ZipFile) -> list[str]:
@@ -167,7 +148,10 @@ def _sheet_path(xlsx: ZipFile, sheet_name: str) -> str:
         if sheet.attrib.get("name") == sheet_name:
             rel_id = sheet.attrib[f"{{{NS['office']}}}id"]
             target = relation_targets[rel_id]
-            return "xl/" + target.lstrip("/")
+            target = target.lstrip("/")
+            if target.startswith("xl/"):
+                return target
+            return "xl/" + target
 
     raise ValueError(f"Лист не найден: {sheet_name}")
 
@@ -200,10 +184,9 @@ def _find_columns(header_row: dict[int, object]) -> dict[str, int]:
     columns: dict[str, int] = {}
 
     for column_index, header in header_row.items():
-        normalized_header = _normalize_text(header)
-        for marker, field_name in HEADER_TO_FIELD.items():
-            if marker in normalized_header:
-                columns[field_name] = column_index
+        field_name = HEADER_TO_FIELD.get(str(header))
+        if field_name is not None:
+            columns[field_name] = column_index
 
     missing = sorted(set(HEADER_TO_FIELD.values()) - set(columns))
     if missing:
@@ -212,37 +195,30 @@ def _find_columns(header_row: dict[int, object]) -> dict[str, int]:
     return columns
 
 
-def parse_required_reserves(
+def parse_ruonia(
     input_path: Path = RAW_FILE,
     sheet_name: str = SHEET_NAME,
 ) -> list[dict[str, object]]:
-    """Парсит данные по обязательным резервам из Excel-файла ЦБ"""
+    """Парсит дневные значения RUONIA из Excel-файла ЦБ"""
     rows = _read_sheet_rows(input_path, sheet_name)
     columns = _find_columns(rows[HEADER_ROW - 1])
 
     parsed_rows: list[dict[str, object]] = []
     for row in rows[FIRST_DATA_ROW - 1 :]:
-        row_date = _excel_date_to_string(row.get(columns["date"]))
-        actual_balances = _to_float(row.get(columns["actual_balances"]))
-        required_reserves_avg = _to_float(row.get(columns["required_reserves_avg"]))
+        row_date = _excel_date_to_date(row.get(columns["date"]))
+        ruonia_rate = _to_float(row.get(columns["ruonia_rate"]))
 
-        if row_date is None or actual_balances is None or required_reserves_avg is None:
+        if row_date is None or ruonia_rate is None:
             continue
-
-        averaging_period_days = _to_int(row.get(columns["averaging_period_days"]))
-        spread = actual_balances - required_reserves_avg
 
         parsed_rows.append(
             {
-                "date": row_date,
-                "actual_balances": actual_balances,
-                "required_reserves_avg": required_reserves_avg,
-                "averaging_period_days": averaging_period_days,
-                "spread": spread,
+                "date": _format_date(row_date),
+                "ruonia_rate": ruonia_rate,
             }
         )
 
-    return parsed_rows
+    return sorted(parsed_rows, key=lambda item: _date_sort_key(item["date"]))
 
 
 def save_csv(rows: list[dict[str, object]], output_path: Path = OUTPUT_FILE) -> None:
@@ -257,7 +233,7 @@ def save_csv(rows: list[dict[str, object]], output_path: Path = OUTPUT_FILE) -> 
 
 def main() -> None:
     """Запускает парсер и сохраняет результат в CSV"""
-    rows = parse_required_reserves()
+    rows = parse_ruonia()
     save_csv(rows)
     print(f"Сохранено строк: {len(rows)}")
     print(f"Файл: {OUTPUT_FILE}")
