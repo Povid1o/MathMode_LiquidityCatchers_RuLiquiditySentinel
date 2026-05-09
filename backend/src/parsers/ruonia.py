@@ -24,11 +24,17 @@ NS = {
 HEADER_TO_FIELD = {
     "DT": "date",
     "ruo": "ruonia_rate",
+    "vol": "transactions_volume",
+    "T": "transactions_count",
+    "C": "participants_count",
 }
 
 OUTPUT_COLUMNS = [
     "date",
     "ruonia_rate",
+    "transactions_volume",
+    "transactions_count",
+    "participants_count",
 ]
 
 
@@ -92,6 +98,14 @@ def _to_float(value: object) -> float | None:
         return float(text)
     except ValueError:
         return None
+
+
+def _to_int(value: object) -> int | None:
+    """Преобразует значение в int"""
+    number = _to_float(value)
+    if number is None:
+        return None
+    return int(number)
 
 
 def _read_shared_strings(xlsx: ZipFile) -> list[str]:
@@ -215,6 +229,11 @@ def parse_ruonia(
             {
                 "date": _format_date(row_date),
                 "ruonia_rate": ruonia_rate,
+                "transactions_volume": _to_float(
+                    row.get(columns["transactions_volume"])
+                ),
+                "transactions_count": _to_int(row.get(columns["transactions_count"])),
+                "participants_count": _to_int(row.get(columns["participants_count"])),
             }
         )
 
