@@ -60,15 +60,21 @@ def _column_index(column_name: str) -> int:
     return index
 
 
-def _excel_date_to_iso(value: object) -> str | None:
-    """Преобразует дату Excel в строку формата YYYY-MM-DD"""
+def _format_date(value: date) -> str:
+    """Форматирует дату в строку DD-MM-YYYY"""
+    return value.strftime("%d-%m-%Y")
+
+
+def _excel_date_to_string(value: object) -> str | None:
+    """Преобразует дату Excel в строку формата DD-MM-YYYY"""
     if isinstance(value, datetime):
-        return value.date().isoformat()
+        return _format_date(value.date())
     if isinstance(value, date):
-        return value.isoformat()
+        return _format_date(value)
 
     if isinstance(value, (int, float)):
-        return (date(1899, 12, 30) + timedelta(days=int(value))).isoformat()
+        excel_date = date(1899, 12, 30) + timedelta(days=int(value))
+        return _format_date(excel_date)
 
     if isinstance(value, str):
         text = value.strip()
@@ -77,7 +83,8 @@ def _excel_date_to_iso(value: object) -> str | None:
 
         for fmt in ("%d.%m.%Y", "%Y-%m-%d"):
             try:
-                return datetime.strptime(text[:10], fmt).date().isoformat()
+                parsed_date = datetime.strptime(text[:10], fmt).date()
+                return _format_date(parsed_date)
             except ValueError:
                 pass
 
@@ -215,7 +222,7 @@ def parse_required_reserves(
 
     parsed_rows: list[dict[str, object]] = []
     for row in rows[FIRST_DATA_ROW - 1 :]:
-        row_date = _excel_date_to_iso(row.get(columns["date"]))
+        row_date = _excel_date_to_string(row.get(columns["date"]))
         actual_balances = _to_float(row.get(columns["actual_balances"]))
         required_reserves_avg = _to_float(row.get(columns["required_reserves_avg"]))
 
