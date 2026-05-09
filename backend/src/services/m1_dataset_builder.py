@@ -8,7 +8,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 REQUIRED_RESERVES_FILE = PROJECT_ROOT / "data/processed/required_reserves.csv"
 RUONIA_FILE = PROJECT_ROOT / "data/processed/ruonia.csv"
-OUTPUT_FILE = PROJECT_ROOT / "data/processed/m1_liquidity_signal.csv"
+OUTPUT_FILE = PROJECT_ROOT / "data/processed/m1_dataset.csv"
 
 OUTPUT_COLUMNS = [
     "date",
@@ -53,7 +53,7 @@ def _build_ruonia_index(rows: list[dict[str, str]]) -> dict[str, dict[str, str]]
     return {row["date"]: row for row in rows}
 
 
-def build_m1_liquidity_signal(
+def build_m1_dataset(
     required_reserves_path: Path = REQUIRED_RESERVES_FILE,
     ruonia_path: Path = RUONIA_FILE,
 ) -> list[dict[str, object]]:
@@ -105,7 +105,7 @@ def save_csv(rows: list[dict[str, object]], output_path: Path = OUTPUT_FILE) -> 
 
 def main() -> None:
     """Запускает сборку датасета М1 и сохраняет результат"""
-    rows = build_m1_liquidity_signal()
+    rows = build_m1_dataset()
     save_csv(rows)
     print(f"Сохранено строк: {len(rows)}")
     print(f"Файл: {OUTPUT_FILE}")
