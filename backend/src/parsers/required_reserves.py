@@ -92,7 +92,7 @@ def _excel_date_to_string(value: object) -> str | None:
 
 
 def _to_float(value: object) -> float | None:
-    """Преобразует значение в float"""
+    """Преобразует значение в число с плавающей точкой"""
     if value is None or value == "":
         return None
     if isinstance(value, (int, float)):
@@ -106,7 +106,7 @@ def _to_float(value: object) -> float | None:
 
 
 def _to_int(value: object) -> int | None:
-    """Преобразует значение в int"""
+    """Преобразует значение в целое число"""
     number = _to_float(value)
     if number is None:
         return None

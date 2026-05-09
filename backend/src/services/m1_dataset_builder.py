@@ -24,14 +24,14 @@ OUTPUT_COLUMNS = [
 
 
 def _to_float(value: str) -> float | None:
-    """Преобразует строку в float"""
+    """Преобразует строку в число с плавающей точкой"""
     if value == "":
         return None
     return float(value)
 
 
 def _to_int(value: str) -> int | None:
-    """Преобразует строку в int"""
+    """Преобразует строку в целое число"""
     if value == "":
         return None
     return int(float(value))
