@@ -12,8 +12,10 @@ OUTPUT_FILE = PROJECT_ROOT / "data/processed/m1_dataset.csv"
 
 OUTPUT_COLUMNS = [
     "date",
+    "averaging_period_end",
     "actual_balances",
     "required_reserves_avg",
+    "accounting_reserves",
     "averaging_period_days",
     "spread",
     "ruonia_rate",
@@ -73,8 +75,10 @@ def build_m1_dataset(
         result_rows.append(
             {
                 "date": row["date"],
+                "averaging_period_end": row["averaging_period_end"],
                 "actual_balances": _to_float(row["actual_balances"]),
                 "required_reserves_avg": _to_float(row["required_reserves_avg"]),
+                "accounting_reserves": _to_float(row["accounting_reserves"]),
                 "averaging_period_days": period_days,
                 "spread": _to_float(row["spread"]),
                 "ruonia_rate": _to_float(ruonia_row.get("ruonia_rate", "")),

@@ -26,13 +26,16 @@ HEADER_TO_FIELD = {
     "период усреднения обязательных резервов": "date",
     "фактические среднедневные остатки средств на корсчетах": "actual_balances",
     "обязательные резервы подлежащие усреднению на корсчетах": "required_reserves_avg",
+    "обязательные резервы на счетах для их учета": "accounting_reserves",
     "число календарных дней в периоде усреднения обязательных резервов": "averaging_period_days",
 }
 
 OUTPUT_COLUMNS = [
     "date",
+    "averaging_period_end",
     "actual_balances",
     "required_reserves_avg",
+    "accounting_reserves",
     "averaging_period_days",
     "spread",
 ]
@@ -89,6 +92,11 @@ def _excel_date_to_string(value: object) -> str | None:
                 pass
 
     return None
+
+
+def _string_to_date(value: str) -> date:
+    """Преобразует строковую дату DD-MM-YYYY в объект date"""
+    return datetime.strptime(value, "%d-%m-%Y").date()
 
 
 def _to_float(value: object) -> float | None:
@@ -229,14 +237,23 @@ def parse_required_reserves(
         if row_date is None or actual_balances is None or required_reserves_avg is None:
             continue
 
+        accounting_reserves = _to_float(row.get(columns["accounting_reserves"]))
         averaging_period_days = _to_int(row.get(columns["averaging_period_days"]))
+        if averaging_period_days is None:
+            continue
+
+        averaging_period_end = _string_to_date(row_date) + timedelta(
+            days=averaging_period_days - 1
+        )
         spread = actual_balances - required_reserves_avg
 
         parsed_rows.append(
             {
                 "date": row_date,
+                "averaging_period_end": _format_date(averaging_period_end),
                 "actual_balances": actual_balances,
                 "required_reserves_avg": required_reserves_avg,
+                "accounting_reserves": accounting_reserves,
                 "averaging_period_days": averaging_period_days,
                 "spread": spread,
             }
