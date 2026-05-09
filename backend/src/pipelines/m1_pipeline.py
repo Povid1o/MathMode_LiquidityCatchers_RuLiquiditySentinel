@@ -5,23 +5,19 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-DOWNLOADERS_PATH = PROJECT_ROOT / "backend/src/downloaders"
-PARSERS_PATH = PROJECT_ROOT / "backend/src/parsers"
-SERVICES_PATH = PROJECT_ROOT / "backend/src/services"
 
-for path in (DOWNLOADERS_PATH, PARSERS_PATH, SERVICES_PATH):
-    sys.path.insert(0, str(path))
+sys.path.insert(0, str(PROJECT_ROOT))
 
-from required_reserves_downloader import download_required_reserves
-from ruonia_downloader import download_ruonia
+from backend.src.downloaders.required_reserves_downloader import download_required_reserves
+from backend.src.downloaders.ruonia_downloader import download_ruonia
 
-from required_reserves import parse_required_reserves
-from required_reserves import save_csv as save_required_reserves_csv
-from ruonia import parse_ruonia
-from ruonia import save_csv as save_ruonia_csv
+from backend.src.parsers.required_reserves import parse_required_reserves
+from backend.src.parsers.required_reserves import save_csv as save_required_reserves_csv
+from backend.src.parsers.ruonia import parse_ruonia
+from backend.src.parsers.ruonia import save_csv as save_ruonia_csv
 
-from m1_dataset_builder import build_m1_dataset
-from m1_dataset_builder import save_csv as save_m1_dataset_csv
+from backend.src.services.m1_dataset_builder import build_m1_dataset
+from backend.src.services.m1_dataset_builder import save_csv as save_m1_dataset_csv
 
 
 def run_m1_pipeline() -> None:
