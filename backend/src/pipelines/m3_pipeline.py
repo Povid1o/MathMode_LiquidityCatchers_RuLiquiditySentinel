@@ -15,6 +15,9 @@ from backend.src.parsers.ofz_auctions import save_csv as save_ofz_auctions_csv
 
 from backend.src.services.m3_dataset_builder import build_m3_dataset
 from backend.src.services.m3_dataset_builder import save_csv as save_m3_dataset_csv
+from backend.src.services.m3_feature_builder import build_m3_features
+from backend.src.services.m3_feature_builder import save_csv as save_m3_features_csv
+from backend.src.services.m3_feature_builder import save_parquet as save_m3_features_parquet
 
 
 def run_m3_pipeline() -> None:
@@ -31,7 +34,13 @@ def run_m3_pipeline() -> None:
     m3_rows = build_m3_dataset()
     save_m3_dataset_csv(m3_rows)
 
+    print("Собираем признаки М3")
+    m3_feature_rows = build_m3_features()
+    save_m3_features_csv(m3_feature_rows)
+    save_m3_features_parquet(m3_feature_rows)
+
     print(f"Готово, строк в датасете М3: {len(m3_rows)}")
+    print(f"Готово, строк в признаках М3: {len(m3_feature_rows)}")
 
 
 def main() -> None:
