@@ -15,6 +15,9 @@ from backend.src.parsers.tax_calendar import save_csv as save_tax_calendar_csv
 
 from backend.src.services.m4_dataset_builder import build_m4_dataset
 from backend.src.services.m4_dataset_builder import save_csv as save_m4_dataset_csv
+from backend.src.services.m4_feature_builder import build_m4_features
+from backend.src.services.m4_feature_builder import save_csv as save_m4_features_csv
+from backend.src.services.m4_feature_builder import save_parquet as save_m4_features_parquet
 
 
 def run_m4_pipeline() -> None:
@@ -31,8 +34,14 @@ def run_m4_pipeline() -> None:
     m4_rows = build_m4_dataset()
     save_m4_dataset_csv(m4_rows)
 
+    print("Собираем признаки М4")
+    m4_feature_rows = build_m4_features()
+    save_m4_features_csv(m4_feature_rows)
+    save_m4_features_parquet(m4_feature_rows)
+
     print(f"Готово, строк в налоговом календаре: {len(tax_calendar_rows)}")
     print(f"Готово, строк в датасете М4: {len(m4_rows)}")
+    print(f"Готово, строк в признаках М4: {len(m4_feature_rows)}")
 
 
 def main() -> None:
