@@ -3,6 +3,8 @@
 
 .DS_Store
 
+data/raw/repo/daily/
+
 ### Data ###
 *.dat
 *.efx

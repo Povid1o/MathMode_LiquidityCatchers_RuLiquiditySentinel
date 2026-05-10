@@ -18,6 +18,7 @@ from backend.src.parsers.ruonia import save_csv as save_ruonia_csv
 
 from backend.src.services.m1_dataset_builder import build_m1_dataset
 from backend.src.services.m1_dataset_builder import save_csv as save_m1_dataset_csv
+from backend.src.services.m1_dataset_builder import save_parquet as save_m1_dataset_parquet
 from backend.src.services.m1_feature_builder import build_m1_features
 from backend.src.services.m1_feature_builder import save_csv as save_m1_features_csv
 
@@ -41,6 +42,7 @@ def run_m1_pipeline() -> None:
     print("Собираем датасет М1")
     m1_rows = build_m1_dataset()
     save_m1_dataset_csv(m1_rows)
+    save_m1_dataset_parquet(m1_rows)
 
     print("Собираем признаки М1")
     m1_feature_rows = build_m1_features()
