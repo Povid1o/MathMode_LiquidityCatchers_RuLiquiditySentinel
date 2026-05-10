@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+from bisect import bisect_right
 from datetime import datetime
 from pathlib import Path
 
@@ -18,6 +19,15 @@ OUTPUT_COLUMNS = [
     "total_deals_volume",
     "weighted_average_rate",
     "settlement_code",
+    "demand_volume",
+    "cutoff_rate",
+    "min_rate",
+    "max_rate",
+    "limit_deals_volume",
+    "weighted_average_limit_rate",
+    "first_leg_date",
+    "second_leg_date",
+    "cover_ratio",
     "key_rate",
 ]
 
@@ -58,9 +68,27 @@ def _date_sort_key(date_text: str) -> datetime:
     return datetime.strptime(date_text, "%d-%m-%Y")
 
 
-def _build_keyrate_index(rows: list[dict[str, str]]) -> dict[str, dict[str, str]]:
-    """Создает словарь строк ключевой ставки по датам"""
-    return {row["date"]: row for row in rows}
+def _build_keyrate_timeline(
+    rows: list[dict[str, str]],
+) -> list[tuple[datetime, dict[str, str]]]:
+    """Создает временную шкалу ключевой ставки"""
+    return sorted((_date_sort_key(row["date"]), row) for row in rows)
+
+
+def _find_keyrate_for_date(
+    timeline: list[tuple[datetime, dict[str, str]]],
+    timeline_dates: list[datetime],
+    repo_date: str,
+) -> dict[str, str]:
+    """Находит последнюю известную ключевую ставку на дату аукциона"""
+    if not timeline:
+        return {}
+
+    index = bisect_right(timeline_dates, _date_sort_key(repo_date)) - 1
+    if index < 0:
+        return {}
+
+    return timeline[index][1]
 
 
 def build_m2_dataset(
@@ -70,11 +98,16 @@ def build_m2_dataset(
     """Собирает датасет М2 из итогов репо и ключевой ставки"""
     repo_rows = _read_csv(repo_path)
     keyrate_rows = _read_csv(keyrate_path)
-    keyrate_by_date = _build_keyrate_index(keyrate_rows)
+    keyrate_timeline = _build_keyrate_timeline(keyrate_rows)
+    keyrate_dates = [item[0] for item in keyrate_timeline]
 
     result_rows: list[dict[str, object]] = []
     for row in repo_rows:
-        keyrate_row = keyrate_by_date.get(row["date"], {})
+        keyrate_row = _find_keyrate_for_date(
+            keyrate_timeline,
+            keyrate_dates,
+            row["date"],
+        )
 
         result_rows.append(
             {
@@ -85,6 +118,17 @@ def build_m2_dataset(
                 "total_deals_volume": _to_float(row["total_deals_volume"]),
                 "weighted_average_rate": _to_float(row["weighted_average_rate"]),
                 "settlement_code": row["settlement_code"],
+                "demand_volume": _to_float(row.get("demand_volume", "")),
+                "cutoff_rate": _to_float(row.get("cutoff_rate", "")),
+                "min_rate": _to_float(row.get("min_rate", "")),
+                "max_rate": _to_float(row.get("max_rate", "")),
+                "limit_deals_volume": _to_float(row.get("limit_deals_volume", "")),
+                "weighted_average_limit_rate": _to_float(
+                    row.get("weighted_average_limit_rate", "")
+                ),
+                "first_leg_date": row.get("first_leg_date", ""),
+                "second_leg_date": row.get("second_leg_date", ""),
+                "cover_ratio": _to_float(row.get("cover_ratio", "")),
                 "key_rate": _to_float(keyrate_row.get("key_rate", "")),
             }
         )

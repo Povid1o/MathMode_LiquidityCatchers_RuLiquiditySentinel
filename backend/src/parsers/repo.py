@@ -9,6 +9,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 RAW_FILE = PROJECT_ROOT / "data/raw/repo/repo.html"
+DAILY_DIR = PROJECT_ROOT / "data/raw/repo/daily"
 OUTPUT_FILE = PROJECT_ROOT / "data/processed/repo.csv"
 
 OUTPUT_COLUMNS = [
@@ -19,6 +20,15 @@ OUTPUT_COLUMNS = [
     "total_deals_volume",
     "weighted_average_rate",
     "settlement_code",
+    "demand_volume",
+    "cutoff_rate",
+    "min_rate",
+    "max_rate",
+    "limit_deals_volume",
+    "weighted_average_limit_rate",
+    "first_leg_date",
+    "second_leg_date",
+    "cover_ratio",
 ]
 
 HEADER_TO_FIELD = {
@@ -30,6 +40,34 @@ HEADER_TO_FIELD = {
     "средневзвешенная ставка годовых": "weighted_average_rate",
     "код расчета": "settlement_code",
 }
+
+DETAIL_TO_FIELD = {
+    "тип аукциона": "auction_type",
+    "объем спроса на операции репо млн руб": "demand_volume",
+    "общий объем заключенных сделок репо млн руб": "total_deals_volume",
+    "ставка отсечения годовых": "cutoff_rate",
+    "средневзвешенная ставка годовых": "weighted_average_rate",
+    "минимальная заявленная ставка годовых": "min_rate",
+    "максимальная заявленная ставка годовых": "max_rate",
+    "объем заключенных сделок репо в рамках лимита млн руб": "limit_deals_volume",
+    "средневзвешенная ставка по заявкам удовлетворенным в рамках лимита годовых": (
+        "weighted_average_limit_rate"
+    ),
+    "срок дни": "term_days",
+    "дата исполнения первой части сделки": "first_leg_date",
+    "дата исполнения второй части сделки": "second_leg_date",
+}
+
+DETAIL_FIELDS = [
+    "demand_volume",
+    "cutoff_rate",
+    "min_rate",
+    "max_rate",
+    "limit_deals_volume",
+    "weighted_average_limit_rate",
+    "first_leg_date",
+    "second_leg_date",
+]
 
 
 class _TableParser(HTMLParser):
@@ -110,6 +148,11 @@ def _format_date(value: str) -> str | None:
         return None
 
 
+def _format_daily_file_date(value: str) -> str:
+    """Преобразует дату из YYYY-MM-DD в DD-MM-YYYY"""
+    return datetime.strptime(value, "%Y-%m-%d").strftime("%d-%m-%Y")
+
+
 def _date_sort_key(date_text: object) -> datetime:
     """Готовит строковую дату DD-MM-YYYY для сортировки"""
     return datetime.strptime(str(date_text), "%d-%m-%Y")
@@ -166,6 +209,21 @@ def _find_summary_table(tables: list[list[list[str]]]) -> list[list[str]]:
     raise ValueError("Не найдена сводная таблица итогов репо")
 
 
+def _find_detail_tables(tables: list[list[list[str]]]) -> list[list[str]]:
+    """Находит дневные таблицы с деталями аукционов репо"""
+    detail_tables: list[list[str]] = []
+    for table in tables:
+        normalized_keys = {
+            _normalize_header(row[0])
+            for row in table
+            if len(row) >= 2 and row[0].strip() != ""
+        }
+        if "тип аукциона" in normalized_keys and "срок дни" in normalized_keys:
+            detail_tables.append(table)
+
+    return detail_tables
+
+
 def _find_columns(header_row: list[str]) -> dict[str, int]:
     """Находит номера нужных колонок по строке заголовков"""
     columns: dict[str, int] = {}
@@ -190,8 +248,26 @@ def _get(row: list[str], index: int) -> str:
     return row[index]
 
 
-def parse_repo(input_path: Path = RAW_FILE) -> list[dict[str, object]]:
-    """Парсит итоги аукционов репо из HTML-файла ЦБ"""
+def _daily_path_for_date(date_text: object, daily_dir: Path = DAILY_DIR) -> Path:
+    """Возвращает путь дневной страницы для даты DD-MM-YYYY"""
+    repo_date = datetime.strptime(str(date_text), "%d-%m-%Y").date()
+    return daily_dir / f"{repo_date.isoformat()}.html"
+
+
+def _calculate_cover_ratio(row: dict[str, object]) -> float | None:
+    """Считает отношение спроса к объему заключенных сделок"""
+    demand_volume = row.get("demand_volume")
+    total_deals_volume = row.get("total_deals_volume")
+    if not isinstance(demand_volume, (int, float)):
+        return None
+    if not isinstance(total_deals_volume, (int, float)) or total_deals_volume == 0:
+        return None
+
+    return demand_volume / total_deals_volume
+
+
+def parse_repo_summary(input_path: Path = RAW_FILE) -> list[dict[str, object]]:
+    """Парсит сводную таблицу итогов аукционов репо из HTML-файла ЦБ"""
     tables = _read_tables(input_path)
     table = _find_summary_table(tables)
     columns = _find_columns(table[0])
@@ -217,6 +293,128 @@ def parse_repo(input_path: Path = RAW_FILE) -> list[dict[str, object]]:
                 "settlement_code": _get(row, columns["settlement_code"]),
             }
         )
+
+    return sorted(
+        parsed_rows,
+        key=lambda item: (
+            _date_sort_key(item["date"]),
+            str(item["auction_time"]),
+            _sort_term_days(item["term_days"]),
+        ),
+    )
+
+
+def parse_repo_daily_detail(
+    input_path: Path,
+    date_text: str | None = None,
+) -> list[dict[str, object]]:
+    """Парсит дневную страницу ЦБ с деталями аукционов репо"""
+    if date_text is None:
+        date_text = _format_daily_file_date(input_path.stem)
+
+    tables = _read_tables(input_path)
+    detail_rows: list[dict[str, object]] = []
+    for table in _find_detail_tables(tables):
+        parsed_row: dict[str, object] = {"date": date_text}
+        for row in table:
+            if len(row) < 2:
+                continue
+
+            field_name = DETAIL_TO_FIELD.get(_normalize_header(row[0]))
+            if field_name is None:
+                continue
+
+            value = row[1]
+            if field_name in {
+                "demand_volume",
+                "total_deals_volume",
+                "cutoff_rate",
+                "weighted_average_rate",
+                "min_rate",
+                "max_rate",
+                "limit_deals_volume",
+                "weighted_average_limit_rate",
+            }:
+                parsed_row[field_name] = _to_float(value)
+            elif field_name == "term_days":
+                parsed_row[field_name] = _to_int(value)
+            elif field_name in {"first_leg_date", "second_leg_date"}:
+                parsed_row[field_name] = _format_date(value)
+            elif field_name == "auction_type":
+                parsed_row[field_name] = value.lower()
+            else:
+                parsed_row[field_name] = value
+
+        if len(parsed_row) > 1:
+            detail_rows.append(parsed_row)
+
+    return detail_rows
+
+
+def _detail_key(row: dict[str, object]) -> tuple[object, object, object]:
+    """Создает ключ для связи сводной строки и дневной детализации"""
+    return (
+        row.get("date"),
+        row.get("auction_type"),
+        row.get("term_days"),
+    )
+
+
+def _build_detail_index(
+    summary_rows: list[dict[str, object]],
+    daily_dir: Path = DAILY_DIR,
+) -> dict[tuple[object, object, object], dict[str, object]]:
+    """Собирает индекс дневных деталей по дате, типу и сроку"""
+    details: dict[tuple[object, object, object], dict[str, object]] = {}
+    parsed_dates: set[object] = set()
+
+    for summary_row in summary_rows:
+        row_date = summary_row["date"]
+        if row_date in parsed_dates:
+            continue
+        parsed_dates.add(row_date)
+
+        daily_path = _daily_path_for_date(row_date, daily_dir)
+        if not daily_path.exists():
+            continue
+
+        for detail_row in parse_repo_daily_detail(daily_path, str(row_date)):
+            details[_detail_key(detail_row)] = detail_row
+
+    return details
+
+
+def _merge_summary_with_detail(
+    summary_row: dict[str, object],
+    detail_row: dict[str, object] | None,
+) -> dict[str, object]:
+    """Объединяет сводную строку с дневной детализацией"""
+    result = {column: None for column in OUTPUT_COLUMNS}
+    result.update(summary_row)
+
+    if detail_row is not None:
+        for field_name, value in detail_row.items():
+            if field_name in {"date"}:
+                continue
+            if value is not None and value != "":
+                result[field_name] = value
+
+    result["cover_ratio"] = _calculate_cover_ratio(result)
+    return result
+
+
+def parse_repo(
+    input_path: Path = RAW_FILE,
+    daily_dir: Path = DAILY_DIR,
+) -> list[dict[str, object]]:
+    """Парсит итоги аукционов репо и добавляет дневную детализацию"""
+    summary_rows = parse_repo_summary(input_path)
+    detail_index = _build_detail_index(summary_rows, daily_dir)
+
+    parsed_rows = [
+        _merge_summary_with_detail(summary_row, detail_index.get(_detail_key(summary_row)))
+        for summary_row in summary_rows
+    ]
 
     return sorted(
         parsed_rows,

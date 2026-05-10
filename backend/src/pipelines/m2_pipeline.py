@@ -10,10 +10,12 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from backend.src.downloaders.keyrate_downloader import download_keyrate
 from backend.src.downloaders.repo_downloader import download_repo
+from backend.src.downloaders.repo_downloader import download_repo_daily_pages
 
 from backend.src.parsers.keyrate import parse_keyrate
 from backend.src.parsers.keyrate import save_csv as save_keyrate_csv
 from backend.src.parsers.repo import parse_repo
+from backend.src.parsers.repo import parse_repo_summary
 from backend.src.parsers.repo import save_csv as save_repo_csv
 
 from backend.src.services.m2_dataset_builder import build_m2_dataset
@@ -24,6 +26,10 @@ def run_m2_pipeline() -> None:
     """Запускает полный пайплайн подготовки данных М2"""
     print("Скачиваем итоги аукционов репо")
     download_repo()
+
+    print("Скачиваем дневные детали аукционов репо")
+    repo_summary_rows = parse_repo_summary()
+    download_repo_daily_pages(repo_summary_rows)
 
     print("Скачиваем ключевую ставку")
     download_keyrate()
