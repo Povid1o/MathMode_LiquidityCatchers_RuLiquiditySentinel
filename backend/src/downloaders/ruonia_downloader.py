@@ -5,7 +5,6 @@ from datetime import date
 from pathlib import Path
 from urllib.parse import urlencode
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(PROJECT_ROOT))
 
