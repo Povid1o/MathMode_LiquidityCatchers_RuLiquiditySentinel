@@ -109,3 +109,66 @@
 ## Статус проекта
 
 Проект находится на начальном этапе. Сейчас задача - собрать базовую структуру, реализовать модули и подготовить рабочий прототип для защиты кейса.
+
+## Backend M1 Data Pipeline
+
+В ветке `backend-m1-parser` подготовлен backend-пайплайн для М1 — усреднение обязательных резервов.
+
+Пайплайн делает:
+
+```text
+сайт ЦБ -> data/raw -> parsers -> data/processed -> m1_dataset.csv
+```
+
+### Источники М1
+
+- обязательные резервы ЦБ: `https://www.cbr.ru/hd_base/RReserves/`
+- RUONIA ЦБ: `https://www.cbr.ru/hd_base/ruonia/dynamics/`
+
+### Основные файлы
+
+```text
+backend/src/downloaders/common.py
+backend/src/downloaders/required_reserves_downloader.py
+backend/src/downloaders/ruonia_downloader.py
+backend/src/parsers/required_reserves.py
+backend/src/parsers/ruonia.py
+backend/src/services/m1_dataset_builder.py
+backend/src/pipelines/m1_pipeline.py
+```
+
+### Raw-данные
+
+```text
+data/raw/required_reserves/required_reserves_table.xlsx
+data/raw/ruonia/ruonia.xlsx
+```
+
+### Processed-данные
+
+```text
+data/processed/required_reserves.csv
+data/processed/ruonia.csv
+data/processed/m1_dataset.csv
+```
+
+### Запуск М1
+
+```bash
+python3 backend/src/pipelines/m1_pipeline.py
+```
+
+Pipeline скачивает актуальные файлы ЦБ, пересобирает `required_reserves.csv`, `ruonia.csv` и итоговый `m1_dataset.csv`.
+
+`m1_dataset.csv` пока является базовым датасетом для аналитика/ML. MAD-score, LSI, `ruonia_avg`, `Flag_EndOfPeriod` и другие feature engineering признаки в нем не считаются.
+
+### Частота обновления
+
+Сейчас автозапуска по расписанию нет. Pipeline запускается вручную.
+
+Целевая частота по ТЗ:
+
+- обязательные резервы — ежемесячно
+- RUONIA — ежедневно по рабочим дням
+
+Scheduler, hash-проверка и `source_state` будут отдельной общей задачей для всех модулей.
