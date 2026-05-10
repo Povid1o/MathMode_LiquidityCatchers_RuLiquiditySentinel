@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import sys
 from datetime import date
 from pathlib import Path
 from urllib.parse import urlencode
 
-from common import download_file
-
-
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from backend.src.downloaders.common import download_file
+
 SOURCE_URL = "https://www.cbr.ru/Queries/UniDbQuery/DownloadExcel/14315"
 OUTPUT_FILE = PROJECT_ROOT / "data/raw/ruonia/ruonia.xlsx"
 DEFAULT_START_DATE = date(2010, 4, 1)

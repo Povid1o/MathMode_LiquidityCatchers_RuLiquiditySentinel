@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
-
-from common import download_file
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from backend.src.downloaders.common import download_file
+
 SOURCE_URL = "https://www.cbr.ru/vfs/hd_base/RReserves/required_reserves_table.xlsx"
 OUTPUT_FILE = PROJECT_ROOT / "data/raw/required_reserves/required_reserves_table.xlsx"
 
