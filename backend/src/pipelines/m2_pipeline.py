@@ -20,6 +20,9 @@ from backend.src.parsers.repo import save_csv as save_repo_csv
 
 from backend.src.services.m2_dataset_builder import build_m2_dataset
 from backend.src.services.m2_dataset_builder import save_csv as save_m2_dataset_csv
+from backend.src.services.m2_feature_builder import build_m2_features
+from backend.src.services.m2_feature_builder import save_csv as save_m2_features_csv
+from backend.src.services.m2_feature_builder import save_parquet as save_m2_features_parquet
 
 
 def run_m2_pipeline() -> None:
@@ -46,7 +49,13 @@ def run_m2_pipeline() -> None:
     m2_rows = build_m2_dataset()
     save_m2_dataset_csv(m2_rows)
 
+    print("Собираем признаки М2")
+    m2_feature_rows = build_m2_features()
+    save_m2_features_csv(m2_feature_rows)
+    save_m2_features_parquet(m2_feature_rows)
+
     print(f"Готово, строк в датасете М2: {len(m2_rows)}")
+    print(f"Готово, строк в признаках М2: {len(m2_feature_rows)}")
 
 
 def main() -> None:
