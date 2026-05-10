@@ -4,15 +4,11 @@ import csv
 from datetime import datetime
 from pathlib import Path
 
-import pyarrow as pa
-import pyarrow.parquet as pq
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 REQUIRED_RESERVES_FILE = PROJECT_ROOT / "data/processed/required_reserves.csv"
 RUONIA_FILE = PROJECT_ROOT / "data/processed/ruonia.csv"
 CSV_OUTPUT_FILE = PROJECT_ROOT / "data/processed/m1_dataset.csv"
-PARQUET_OUTPUT_FILE = PROJECT_ROOT / "data/processed/m1_dataset.parquet"
 
 OUTPUT_COLUMNS = [
     "date",
@@ -114,39 +110,12 @@ def save_csv(
         writer.writerows(rows)
 
 
-def save_parquet(
-    rows: list[dict[str, object]],
-    output_path: Path = PARQUET_OUTPUT_FILE,
-) -> None:
-    """Сохраняет датасет М1 в Parquet-файл"""
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    schema = pa.schema(
-        [
-            pa.field("date", pa.string()),
-            pa.field("averaging_period_end", pa.string()),
-            pa.field("actual_balances", pa.float64()),
-            pa.field("required_reserves_avg", pa.float64()),
-            pa.field("accounting_reserves", pa.float64()),
-            pa.field("averaging_period_days", pa.int64()),
-            pa.field("spread", pa.float64()),
-            pa.field("ruonia_rate", pa.float64()),
-            pa.field("ruonia_transactions_volume", pa.float64()),
-            pa.field("ruonia_transactions_count", pa.int64()),
-            pa.field("ruonia_participants_count", pa.int64()),
-        ]
-    )
-    table = pa.Table.from_pylist(rows, schema=schema)
-    pq.write_table(table, output_path)
-
-
 def main() -> None:
     """Запускает сборку датасета М1 и сохраняет результат"""
     rows = build_m1_dataset()
     save_csv(rows)
-    save_parquet(rows)
     print(f"Сохранено строк: {len(rows)}")
     print(f"CSV-файл: {CSV_OUTPUT_FILE}")
-    print(f"Parquet-файл: {PARQUET_OUTPUT_FILE}")
 
 
 if __name__ == "__main__":

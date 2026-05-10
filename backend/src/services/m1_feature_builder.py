@@ -10,6 +10,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 M1_DATASET_FILE = PROJECT_ROOT / "data/processed/m1_dataset.csv"
 RUONIA_FILE = PROJECT_ROOT / "data/processed/ruonia.csv"
 OUTPUT_FILE = PROJECT_ROOT / "data/processed/m1_features.csv"
+PARQUET_FILE = PROJECT_ROOT / "data/processed/m1_features.parquet"
 MAD_WINDOW = 36
 
 OUTPUT_COLUMNS = [
@@ -323,12 +324,63 @@ def save_csv(rows: list[dict[str, object]], output_path: Path = OUTPUT_FILE) -> 
         writer.writerows(rows)
 
 
+def save_parquet(
+    rows: list[dict[str, object]],
+    output_path: Path = PARQUET_FILE,
+) -> None:
+    """Сохраняет признаки М1 в Parquet-файл"""
+    try:
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+    except ModuleNotFoundError as error:
+        raise RuntimeError("Для сохранения parquet нужен пакет pyarrow") from error
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    schema = pa.schema(
+        [
+            pa.field("date", pa.string()),
+            pa.field("averaging_period_end", pa.string()),
+            pa.field("averaging_period_days", pa.int64()),
+            pa.field("actual_balances", pa.float64()),
+            pa.field("required_reserves_avg", pa.float64()),
+            pa.field("accounting_reserves", pa.float64()),
+            pa.field("full_reserves", pa.float64()),
+            pa.field("spread", pa.float64()),
+            pa.field("spread_relative", pa.float64()),
+            pa.field("spread_delta", pa.float64()),
+            pa.field("spread_ma3", pa.float64()),
+            pa.field("reserve_load", pa.float64()),
+            pa.field("ruonia_rate", pa.float64()),
+            pa.field("ruonia_period_avg", pa.float64()),
+            pa.field("ruonia_start", pa.float64()),
+            pa.field("flag_end_of_period", pa.int64()),
+            pa.field("spread_mad_score", pa.float64()),
+            pa.field("spread_relative_mad_score", pa.float64()),
+            pa.field("spread_delta_mad_score", pa.float64()),
+            pa.field("reserve_load_mad_score", pa.float64()),
+            pa.field("ruonia_mad_score", pa.float64()),
+            pa.field("m1_signal", pa.float64()),
+            pa.field("m1_signal_final", pa.float64()),
+            pa.field("m1_reliable", pa.int64()),
+        ]
+    )
+    ordered_rows = [
+        {column: row.get(column) for column in OUTPUT_COLUMNS}
+        for row in rows
+    ]
+
+    table = pa.Table.from_pylist(ordered_rows, schema=schema)
+    pq.write_table(table, output_path)
+
+
 def main() -> None:
     """Запускает сборку признаков М1 и сохраняет результат"""
     rows = build_m1_features()
     save_csv(rows)
+    save_parquet(rows)
     print(f"Сохранено строк: {len(rows)}")
     print(f"Файл: {OUTPUT_FILE}")
+    print(f"Файл parquet: {PARQUET_FILE}")
 
 
 if __name__ == "__main__":
