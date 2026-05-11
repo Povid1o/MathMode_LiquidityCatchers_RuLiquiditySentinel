@@ -8,7 +8,7 @@ import plotly.express as px
 import pandas as pd
 from dashboard.data.loader import load_m4
 from dashboard.components.charts import line_chart, mad_score_bar
-from dashboard.components.metrics import latest_value_metric, date_range_filter
+from dashboard.components.metrics import latest_value_metric, quick_period_filter, freshness_header, csv_download_button
 from dashboard.config import COLORS, PLOTLY_TEMPLATE
 
 st.set_page_config(page_title="M4 — Налоги", layout="wide")
@@ -23,7 +23,8 @@ st.markdown(
 with st.spinner("Загрузка данных M4..."):
     df = load_m4()
 
-df = date_range_filter(df, key="m4_date")
+freshness_header(df, "M4 — Налоги")
+df = quick_period_filter(df, key="m4_period")
 
 if df.empty:
     st.warning("Нет данных для выбранного периода.")
@@ -153,3 +154,4 @@ with st.expander("Таблица данных M4"):
                  "MAD_tax_pressure", "MAD_tax_proximity", "Seasonal_Factor_raw"]
     cols_show = [c for c in cols_show if c in df.columns]
     st.dataframe(df[cols_show].sort_values("date", ascending=False), use_container_width=True, hide_index=True)
+    csv_download_button(df[cols_show], "m4_features.csv")

@@ -4,14 +4,24 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import streamlit as st
 import pandas as pd
-from dashboard.data.loader import dataset_summary
-from dashboard.components.metrics import module_status_row, lsi_stub_banner
+from dashboard.data.loader import dataset_summary, load_lsi, load_lsi_response
+from dashboard.components.metrics import module_status_row, proxy_score_note
 from dashboard.config import MODULE_LABELS
 
 st.set_page_config(page_title="Обзор системы", layout="wide")
 
 st.title("Обзор системы мониторинга стресса ликвидности")
-lsi_stub_banner()
+
+# Check if LSI is available
+try:
+    with st.spinner("Загрузка LSI..."):
+        df_lsi = load_lsi()
+        lsi_response = load_lsi_response()
+    lsi_available = "lsi" in df_lsi.columns
+except Exception as e:
+    lsi_available = False
+    lsi_response = {}
+    st.warning(f"Ошибка при загрузке LSI: {e}", icon="⚠️")
 
 st.markdown("---")
 
@@ -60,11 +70,30 @@ else:
 # --- LSI status ---
 st.markdown("---")
 st.subheader("Индекс стресса ликвидности (LSI)")
-st.error(
-    "**LSI не рассчитан.** Финальная ML-модель ещё не обучена.  \n"
-    "Датасет `final_ml_dataset` содержит 102 признака — основу для будущей модели.",
-    icon="🚫",
-)
+
+if lsi_available:
+    st.success(
+        "**✓ LSI рассчитан и доступен.**  \n"
+        "Используется IsolationForest для обнаружения аномалий на финальном датасете "
+        "(98 признаков из М1–М5, скейлировано + PCA).",
+    )
+    latest_lsi = float(lsi_response["LSI_Index"])
+    lsi_status = str(lsi_response["status"])
+    top_drivers = lsi_response.get("top_drivers", [])
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Последний LSI", f"{latest_lsi:.2f}")
+    c2.metric("Статус", lsi_status)
+    c3.metric("Пороги светофора", "40 / 70")
+
+    if top_drivers:
+        st.caption("Top drivers: " + ", ".join(top_drivers))
+else:
+    st.error(
+        "**LSI недоступен.** Модель не найдена в `models/lsi_pipeline.joblib`.  \n"
+        "Датасет `final_ml_dataset` содержит 102 признака для её обучения.",
+        icon="🚫",
+    )
 
 # --- Quick data freshness ---
 st.markdown("---")

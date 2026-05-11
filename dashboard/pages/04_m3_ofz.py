@@ -5,7 +5,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 import streamlit as st
 from dashboard.data.loader import load_m3
 from dashboard.components.charts import event_scatter, bar_chart, mad_score_bar, flag_timeline
-from dashboard.components.metrics import latest_value_metric, mad_status_metric, date_range_filter
+from dashboard.components.metrics import latest_value_metric, mad_status_metric, quick_period_filter, freshness_header, csv_download_button
 
 st.set_page_config(page_title="M3 — ОФЗ", layout="wide")
 st.title("M3 — Размещение ОФЗ")
@@ -19,7 +19,8 @@ st.markdown(
 with st.spinner("Загрузка данных M3..."):
     df = load_m3()
 
-df = date_range_filter(df, key="m3_date")
+freshness_header(df, "M3 — ОФЗ")
+df = quick_period_filter(df, key="m3_period")
 
 if df.empty:
     st.warning("Нет данных для выбранного периода.")
@@ -157,3 +158,4 @@ with st.expander("Таблица данных M3"):
                  "MAD_score_cover", "MAD_score_yield_spread"]
     cols_show = [c for c in cols_show if c in df.columns]
     st.dataframe(df[cols_show].sort_values("date", ascending=False), use_container_width=True, hide_index=True)
+    csv_download_button(df[cols_show], "m3_features.csv")

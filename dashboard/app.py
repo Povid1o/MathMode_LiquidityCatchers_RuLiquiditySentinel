@@ -55,6 +55,7 @@ st.markdown(
 pages_dir = Path(__file__).parent / "pages"
 
 overview = st.Page(str(pages_dir / "01_overview.py"), title="Обзор системы", icon="🏠")
+signals = st.Page(str(pages_dir / "00_combined_signals.py"), title="Сводные сигналы", icon="📡")
 m1 = st.Page(str(pages_dir / "02_m1_reserves.py"), title="M1 — Резервы", icon="🏦")
 m2 = st.Page(str(pages_dir / "03_m2_repo.py"), title="M2 — Репо ЦБ", icon="📋")
 m3 = st.Page(str(pages_dir / "04_m3_ofz.py"), title="M3 — ОФЗ", icon="📜")
@@ -64,7 +65,7 @@ quality = st.Page(str(pages_dir / "07_data_quality.py"), title="Качество
 
 pg = st.navigation(
     {
-        "Главная": [overview],
+        "Главная": [overview, signals],
         "Модули": [m1, m2, m3, m4, m5],
         "Инструменты": [quality],
     }

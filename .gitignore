@@ -6,6 +6,7 @@ data/raw/treasury_funds/roskazna_deposits/
 data/raw/treasury_funds/roskazna_pages/
 .claude/*
 .streamlit/*
+.streamlit/config.toml
 
 ### Data ###
 *.csv

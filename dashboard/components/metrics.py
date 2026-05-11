@@ -70,6 +70,52 @@ def proxy_score_note() -> None:
     )
 
 
+def freshness_header(df: pd.DataFrame, module_name: str) -> None:
+    """Shows a small colored freshness indicator for the module."""
+    last_date = df["date"].max()
+    days_ago = (pd.Timestamp.now() - last_date).days
+    if days_ago > 30:
+        color, icon = "#d62728", "🔴"
+    elif days_ago > 14:
+        color, icon = "#bcbd22", "🟡"
+    else:
+        color, icon = "#2ca02c", "🟢"
+    st.markdown(
+        f'<p style="color:{color};font-size:0.82em;margin:0 0 0.8rem 0">'
+        f'{icon} {module_name}: данные до '
+        f'<strong>{last_date.strftime("%d.%m.%Y")}</strong> ({days_ago} дн. назад)</p>',
+        unsafe_allow_html=True,
+    )
+
+
+def quick_period_filter(df: pd.DataFrame, key: str) -> pd.DataFrame:
+    """Horizontal radio buttons for quick period selection."""
+    options = {"3М": 90, "6М": 180, "1Г": 365, "3Г": 1095, "Всё": None}
+    selected = st.radio(
+        "Период",
+        options=list(options.keys()),
+        index=len(options) - 1,
+        horizontal=True,
+        key=key,
+    )
+    days = options[selected]
+    if days is not None:
+        cutoff = df["date"].max() - pd.Timedelta(days=days)
+        return df[df["date"] >= cutoff].copy()
+    return df.copy()
+
+
+def csv_download_button(df: pd.DataFrame, filename: str, label: str = "Скачать CSV") -> None:
+    """Download button for a dataframe as CSV."""
+    csv = df.to_csv(index=False).encode("utf-8-sig")
+    st.download_button(
+        label=label,
+        data=csv,
+        file_name=filename,
+        mime="text/csv",
+    )
+
+
 def date_range_filter(df: pd.DataFrame, key: str) -> pd.DataFrame:
     """Sidebar date range filter that returns filtered df."""
     min_date = df["date"].min().date()

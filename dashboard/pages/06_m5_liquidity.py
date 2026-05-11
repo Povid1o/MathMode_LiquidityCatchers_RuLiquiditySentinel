@@ -6,7 +6,7 @@ import streamlit as st
 import plotly.graph_objects as go
 from dashboard.data.loader import load_m5
 from dashboard.components.charts import line_chart, bar_chart
-from dashboard.components.metrics import latest_value_metric, date_range_filter
+from dashboard.components.metrics import latest_value_metric, quick_period_filter, freshness_header, csv_download_button
 from dashboard.config import COLORS, PLOTLY_TEMPLATE
 
 st.set_page_config(page_title="M5 — Ликвидность", layout="wide")
@@ -21,7 +21,8 @@ st.markdown(
 with st.spinner("Загрузка данных M5..."):
     df = load_m5()
 
-df = date_range_filter(df, key="m5_date")
+freshness_header(df, "M5 — Ликвидность")
+df = quick_period_filter(df, key="m5_period")
 
 if df.empty:
     st.warning("Нет данных для выбранного периода.")
@@ -242,3 +243,4 @@ with st.expander("Таблица данных M5"):
     ]
     cols_show = [c for c in cols_show if c in df.columns]
     st.dataframe(df[cols_show].sort_values("date", ascending=False), use_container_width=True, hide_index=True)
+    csv_download_button(df[cols_show], "m5_features.csv")

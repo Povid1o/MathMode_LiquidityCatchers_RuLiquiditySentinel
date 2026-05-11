@@ -1,11 +1,19 @@
 import pandas as pd
 import streamlit as st
 from pathlib import Path
+import sys
+
 from dashboard.config import DATASETS
+
+PROJECT_ROOT = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from backend.src.services.lsi_prediction_service import add_lsi_scores
+from backend.src.services.lsi_prediction_service import get_lsi_prediction
 
 
 def _parse_dates(df: pd.DataFrame, col: str = "date") -> pd.DataFrame:
-    """Parse date column defensively: handles ISO and DD-MM-YYYY formats."""
+    """Парсит дату с учетом ISO и DD-MM-YYYY форматов"""
     if col not in df.columns:
         return df
     if pd.api.types.is_datetime64_any_dtype(df[col]):
@@ -62,8 +70,28 @@ def load_final() -> pd.DataFrame:
     return df.sort_values("date").reset_index(drop=True)
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_lsi() -> pd.DataFrame:
+    """Загружает финальный датасет и добавляет LSI"""
+    final = load_final()
+    model_path = PROJECT_ROOT / "models" / "lsi_pipeline.joblib"
+
+    if not model_path.exists():
+        return final
+
+    return add_lsi_scores(final, model_path=model_path)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_lsi_response() -> dict[str, object]:
+    """Возвращает последний LSI-ответ для frontend или LLM"""
+    final = load_final()
+    model_path = PROJECT_ROOT / "models" / "lsi_pipeline.joblib"
+    return get_lsi_prediction(final, model_path=model_path)
+
+
 def dataset_summary() -> dict:
-    """Return metadata dict for all datasets (for Overview page)."""
+    """Возвращает метаданные по всем датасетам для overview-страницы"""
     results = {}
     loaders = {
         "m1": load_m1,

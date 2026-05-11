@@ -5,7 +5,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 import streamlit as st
 from dashboard.data.loader import load_m1
 from dashboard.components.charts import line_chart, mad_score_bar, signal_line, dual_axis_chart
-from dashboard.components.metrics import latest_value_metric, mad_status_metric, date_range_filter
+from dashboard.components.metrics import latest_value_metric, mad_status_metric, quick_period_filter, freshness_header, csv_download_button
 
 st.set_page_config(page_title="M1 — Резервы", layout="wide")
 st.title("M1 — Усреднение обязательных резервов")
@@ -19,7 +19,8 @@ st.markdown(
 with st.spinner("Загрузка данных M1..."):
     df = load_m1()
 
-df = date_range_filter(df, key="m1_date")
+freshness_header(df, "M1 — Резервы")
+df = quick_period_filter(df, key="m1_period")
 
 if df.empty:
     st.warning("Нет данных для выбранного периода.")
@@ -116,3 +117,4 @@ with st.expander("Таблица данных M1"):
                  "ruonia_mad_score", "m1_signal_final", "m1_reliable"]
     cols_show = [c for c in cols_show if c in df.columns]
     st.dataframe(df[cols_show].sort_values("date", ascending=False), use_container_width=True, hide_index=True)
+    csv_download_button(df[cols_show], "m1_features.csv")
