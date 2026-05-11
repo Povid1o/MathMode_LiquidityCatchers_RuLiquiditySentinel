@@ -9,3 +9,4 @@ requests==2.33.1
 pyarrow==24.0.0
 streamlit>=1.35.0
 plotly>=5.22.0
+python-dotenv>=1.0.0
