@@ -2,9 +2,12 @@
 # Edit at https://www.toptal.com/developers/gitignore?templates=visualstudiocode,python,jupyternotebooks,data
 
 data/raw/repo/daily/
+data/raw/treasury_funds/roskazna_deposits/
+data/raw/treasury_funds/roskazna_pages/
 
 ### Data ###
 *.csv
+!data/processed/roskazna_treasury_deposits.csv
 *.dat
 *.efx
 *.gbr
