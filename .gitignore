@@ -2,6 +2,8 @@
 # Edit at https://www.toptal.com/developers/gitignore?templates=visualstudiocode,python,jupyternotebooks,data
 
 data/raw/repo/daily/
+data/raw/treasury_funds/roskazna_deposits/
+data/raw/treasury_funds/roskazna_pages/
 
 ### Data ###
 *.csv
@@ -16,6 +18,8 @@ data/raw/repo/daily/
 *.tax2010
 *.vcf
 *.xml
+!data/raw/tax_calendar/*.xml
+!data/raw/tax_calendar/releases/*.xml
 
 ### JupyterNotebooks ###
 # gitignore template for Jupyter Notebooks

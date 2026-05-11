@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+
+  <xs:element name="calendar">
+    <xs:annotation>
+      <xs:documentation>Корневой элемент календаря</xs:documentation>
+    </xs:annotation>
+    <xs:complexType>
+      <xs:sequence>
+
+        <xs:element name="title" type="xs:string" minOccurs="0">
+          <xs:annotation>
+            <xs:documentation>Название календаря (может быть пустым)</xs:documentation>
+          </xs:annotation>
+        </xs:element>
+
+        <xs:element name="year" maxOccurs="unbounded">
+          <xs:annotation>
+            <xs:documentation>Год, содержащий месяцы</xs:documentation>
+          </xs:annotation>
+          <xs:complexType>
+            <xs:sequence>
+
+              <xs:element name="month" maxOccurs="12">
+                <xs:annotation>
+                  <xs:documentation>Месяц в году (например, январь, февраль)</xs:documentation>
+                </xs:annotation>
+                <xs:complexType>
+                  <xs:sequence>
+
+                    <xs:element name="day" maxOccurs="31">
+                      <xs:annotation>
+                        <xs:documentation>День месяца, может содержать текст или HTML</xs:documentation>
+                      </xs:annotation>
+                      <xs:complexType mixed="true">
+
+                        <xs:attribute name="num" type="xs:positiveInteger" use="required">
+                          <xs:annotation>
+                            <xs:documentation>Номер дня в месяце (от 1 до 31)</xs:documentation>
+                          </xs:annotation>
+                        </xs:attribute>
+
+                        <xs:attribute name="type" type="xs:string" use="required">
+                          <xs:annotation>
+                            <xs:documentation>Тип дня: "plain" — обычный, "event" — содержит событие</xs:documentation>
+                          </xs:annotation>
+                        </xs:attribute>
+
+                      </xs:complexType>
+                    </xs:element>
+
+                  </xs:sequence>
+
+                  <xs:attribute name="name" type="xs:string" use="required">
+                    <xs:annotation>
+                      <xs:documentation>Название месяца (например, "january", "february")</xs:documentation>
+                    </xs:annotation>
+                  </xs:attribute>
+
+                </xs:complexType>
+              </xs:element>
+
+            </xs:sequence>
+
+            <xs:attribute name="index" type="xs:gYear" use="required">
+              <xs:annotation>
+                <xs:documentation>Год, к которому относится данный элемент (например, 2025)</xs:documentation>
+              </xs:annotation>
+            </xs:attribute>
+
+          </xs:complexType>
+        </xs:element>
+
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+
+</xs:schema>
