@@ -5,6 +5,7 @@ from datetime import date
 from datetime import datetime
 from datetime import timedelta
 from pathlib import Path
+from statistics import median
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -16,12 +17,18 @@ PARQUET_FILE = PROJECT_ROOT / "data/processed/m5_features.parquet"
 
 BUDGET_PUBLICATION_LAG_DAYS = 30
 ROLLING_WINDOWS = (7, 14, 30)
+MAD_WINDOW_DAYS = 365 * 3
+MIN_MAD_VALUES = 120
+MAD_MIN_VALUE = 1e-6
+BUDGET_DRAIN_THRESHOLD_MLN_RUB = -300_000.0
 
 OUTPUT_COLUMNS = [
     "date",
     "liquidity_deficit_surplus_bln_rub_lag_1d",
     "liquidity_deficit_surplus_bln_rub_change_1d",
     "liquidity_deficit_surplus_bln_rub_change_5d",
+    "cbr_liquidity_stress_mad_score",
+    "cbr_liquidity_drain_mad_score",
     "budget_funds_total_mln_rub_lagged",
     "budget_funds_total_mln_rub_change_lagged",
     "budget_funds_total_mln_rub_pct_change_lagged",
@@ -47,6 +54,8 @@ OUTPUT_COLUMNS = [
     "roskazna_second_leg_rolling_7d_mln_rub",
     "roskazna_second_leg_rolling_14d_mln_rub",
     "roskazna_second_leg_rolling_30d_mln_rub",
+    "roskazna_net_flow_stress_mad_score",
+    "Flag_Budget_Drain",
     "days_since_last_roskazna_auction",
 ]
 
@@ -54,6 +63,8 @@ FLOAT_COLUMNS = {
     "liquidity_deficit_surplus_bln_rub_lag_1d",
     "liquidity_deficit_surplus_bln_rub_change_1d",
     "liquidity_deficit_surplus_bln_rub_change_5d",
+    "cbr_liquidity_stress_mad_score",
+    "cbr_liquidity_drain_mad_score",
     "budget_funds_total_mln_rub_lagged",
     "budget_funds_total_mln_rub_change_lagged",
     "budget_funds_total_mln_rub_pct_change_lagged",
@@ -76,12 +87,14 @@ FLOAT_COLUMNS = {
     "roskazna_second_leg_rolling_7d_mln_rub",
     "roskazna_second_leg_rolling_14d_mln_rub",
     "roskazna_second_leg_rolling_30d_mln_rub",
+    "roskazna_net_flow_stress_mad_score",
 }
 
 INTEGER_COLUMNS = {
     "roskazna_auction_day_flag_lag_1d",
     "roskazna_first_leg_auctions_count",
     "roskazna_second_leg_auctions_count",
+    "Flag_Budget_Drain",
     "days_since_last_roskazna_auction",
 }
 
@@ -125,6 +138,50 @@ def _stable_value(column: str, value: object) -> object:
     if column in INTEGER_COLUMNS:
         return int(value)
     return value
+
+
+def _clip(value: float, lower: float, upper: float) -> float:
+    """Ограничивает значение заданным диапазоном"""
+    return min(max(value, lower), upper)
+
+
+def _median_abs_deviation(values: list[float]) -> float:
+    """Считает медианное абсолютное отклонение"""
+    center = median(values)
+    return median([abs(value - center) for value in values])
+
+
+def _rolling_stress_mad_scores(
+    values: list[float | None],
+    *,
+    stress_when_lower: bool,
+) -> list[float | None]:
+    """Считает rolling MAD-score, где положительные значения означают стресс"""
+    result: list[float | None] = []
+
+    for index, value in enumerate(values):
+        if value is None:
+            result.append(None)
+            continue
+
+        window = values[max(0, index - MAD_WINDOW_DAYS + 1) : index + 1]
+        window_values = [item for item in window if item is not None]
+        if len(window_values) < MIN_MAD_VALUES:
+            result.append(None)
+            continue
+
+        rolling_median = median(window_values)
+        rolling_mad = _median_abs_deviation(window_values)
+        mad_floor = max(abs(rolling_median) * 0.01, MAD_MIN_VALUE)
+        safe_mad = max(rolling_mad, mad_floor)
+
+        if stress_when_lower:
+            score = (rolling_median - value) / safe_mad
+        else:
+            score = (value - rolling_median) / safe_mad
+        result.append(_clip(score, -5.0, 5.0))
+
+    return result
 
 
 def _sum_values(rows: list[dict[str, object]], field_name: str) -> float | None:
@@ -401,17 +458,53 @@ def build_m5_features(
                 _rolling_sum_by_date(second_leg_values, row_date, window_days)
             )
 
-        result_rows.append(
-            {
-                column: _stable_value(column, feature_row.get(column))
-                for column in OUTPUT_COLUMNS
-            }
+        result_rows.append(feature_row)
+
+    cbr_liquidity_values = [
+        _to_float(row.get("liquidity_deficit_surplus_bln_rub_lag_1d"))
+        for row in result_rows
+    ]
+    cbr_liquidity_change_values = [
+        _to_float(row.get("liquidity_deficit_surplus_bln_rub_change_5d"))
+        for row in result_rows
+    ]
+    roskazna_net_flow_values = [
+        _to_float(row.get("roskazna_net_flow_rolling_14d_mln_rub"))
+        for row in result_rows
+    ]
+
+    cbr_liquidity_stress_scores = _rolling_stress_mad_scores(
+        cbr_liquidity_values,
+        stress_when_lower=True,
+    )
+    cbr_liquidity_drain_scores = _rolling_stress_mad_scores(
+        cbr_liquidity_change_values,
+        stress_when_lower=True,
+    )
+    roskazna_net_flow_stress_scores = _rolling_stress_mad_scores(
+        roskazna_net_flow_values,
+        stress_when_lower=True,
+    )
+
+    for index, row in enumerate(result_rows):
+        row["cbr_liquidity_stress_mad_score"] = cbr_liquidity_stress_scores[index]
+        row["cbr_liquidity_drain_mad_score"] = cbr_liquidity_drain_scores[index]
+        row["roskazna_net_flow_stress_mad_score"] = roskazna_net_flow_stress_scores[index]
+        net_flow_14d = _to_float(row.get("roskazna_net_flow_rolling_14d_mln_rub"))
+        row["Flag_Budget_Drain"] = int(
+            net_flow_14d is not None and net_flow_14d <= BUDGET_DRAIN_THRESHOLD_MLN_RUB
         )
 
     removed_duplicates = len(_read_csv(roskazna_deposits_path)) - len(roskazna_rows)
     print(f"Удалено дублей auction_id Росказны при сборке признаков: {removed_duplicates}")
 
-    return result_rows
+    return [
+        {
+            column: _stable_value(column, row.get(column))
+            for column in OUTPUT_COLUMNS
+        }
+        for row in result_rows
+    ]
 
 
 def save_csv(rows: list[dict[str, object]], output_path: Path = OUTPUT_FILE) -> None:

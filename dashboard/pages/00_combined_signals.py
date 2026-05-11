@@ -5,7 +5,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-from dashboard.data.loader import load_final, load_lsi
+from dashboard.data.loader import load_final, load_lsi, load_threshold_profile
+from backend.src.services.lsi_thresholds import DEFAULT_THRESHOLD_PROFILE
 from dashboard.components.metrics import proxy_score_note, quick_period_filter, csv_download_button, freshness_header
 from dashboard.config import COLORS, PLOTLY_TEMPLATE, MAD_STRESS_THRESHOLD
 
@@ -19,7 +20,14 @@ st.markdown(
 proxy_score_note()
 
 with st.spinner("Загрузка финального датасета и LSI..."):
-    df = load_lsi()  # Uses load_lsi which calls load_final + computes LSI
+    df = load_lsi()
+
+# Читаем активный профиль из session_state (устанавливается на странице обзора).
+# Если пользователь ещё не выбрал профиль, используем DEFAULT_THRESHOLD_PROFILE.
+_active_profile: str = st.session_state.get("lsi_threshold_profile", DEFAULT_THRESHOLD_PROFILE)
+_thr = load_threshold_profile(_active_profile)
+_thr_green = float(_thr["green_max"])
+_thr_yellow = float(_thr["yellow_max"])
 
 freshness_header(df, "Final ML Dataset")
 df = quick_period_filter(df, key="signals_period")
@@ -105,7 +113,12 @@ with cols[-1]:
             level = "🟡 Умеренный"
         else:
             level = "🟢 Норма"
-        st.metric("PROXY Score ⚠️", f"{proxy_val:.2f}", delta=f"{level} · {as_of_date.strftime('%d.%m.%Y')}", delta_color="off")
+        st.metric(
+            "Демо MAD-агрегат",
+            f"{proxy_val:.2f}",
+            delta=f"{level} · {as_of_date.strftime('%d.%m.%Y')}",
+            delta_color="off",
+        )
 
 st.markdown("---")
 
@@ -158,7 +171,10 @@ if available_lsi_columns or "lsi" in df.columns:
     st.subheader("LSI — Индекс стресса ликвидности")
     st.caption(
         "LSI Local обучается на последнем 365-дневном окне, LSI Global — на всей истории. "
-        "Шкала 0-100: <40 норма, 40-70 внимание, ≥70 стресс."
+        f"Пороговый профиль: **{_active_profile}** — "
+        f"зелёный < {int(_thr_green)}, жёлтый {int(_thr_green)}–{int(_thr_yellow)}, "
+        f"красный ≥ {int(_thr_yellow)}. "
+        "Изменить профиль можно на странице «Обзор системы»."
     )
 
     fig_lsi = go.Figure()
@@ -176,10 +192,10 @@ if available_lsi_columns or "lsi" in df.columns:
             line=dict(color=color, width=2),
             name=label,
         ))
-    fig_lsi.add_hline(y=70, line_dash="dash", line_color=COLORS["danger"],
-                      opacity=0.7, annotation_text="Стресс", annotation_position="right")
-    fig_lsi.add_hline(y=40, line_dash="dot", line_color=COLORS["warn"],
-                      opacity=0.7, annotation_text="Повышенное внимание", annotation_position="left")
+    fig_lsi.add_hline(y=_thr_yellow, line_dash="dash", line_color=COLORS["danger"],
+                      opacity=0.7, annotation_text=f"Стресс ≥{int(_thr_yellow)}", annotation_position="right")
+    fig_lsi.add_hline(y=_thr_green, line_dash="dot", line_color=COLORS["warn"],
+                      opacity=0.7, annotation_text=f"Внимание ≥{int(_thr_green)}", annotation_position="left")
 
     fig_lsi.update_layout(
         template=PLOTLY_TEMPLATE,
@@ -193,7 +209,7 @@ if available_lsi_columns or "lsi" in df.columns:
     st.markdown("---")
 
 # --- Proxy score chart ---
-st.subheader("PROXY Stress Score (DEMO)")
+st.subheader("Демо MAD-агрегат")
 st.caption(
     "Среднее абсолютных значений доступных MAD-сигналов. "
     "Не является финальным LSI. Используется только для иллюстрации."
@@ -209,14 +225,14 @@ fig_proxy.add_trace(go.Scatter(
     fill="tozeroy",
     fillcolor="rgba(31,119,180,0.15)",
     line=dict(color=COLORS["primary"], width=2),
-    name="PROXY Score",
+    name="Демо MAD-агрегат",
 ))
 fig_proxy.add_hline(y=MAD_STRESS_THRESHOLD, line_dash="dash", line_color=COLORS["danger"],
                     opacity=0.7, annotation_text="Порог стресса", annotation_position="right")
 fig_proxy.update_layout(
     template=PLOTLY_TEMPLATE,
     height=320,
-    yaxis_title="PROXY Score",
+    yaxis_title="Демо MAD-агрегат",
     hovermode="x unified",
     margin=dict(l=40, r=60, t=20, b=40),
 )
@@ -271,6 +287,8 @@ with st.expander("Данные для экспорта"):
         if col in df.columns:
             export_cols.append(col)
     export_cols = [c for c in export_cols if c in df.columns]
-    export_df = df[export_cols].rename(columns={**mad_cols, "_proxy_score": "PROXY_score"})
+    export_df = df[export_cols].rename(
+        columns={**mad_cols, "_proxy_score": "demo_mad_aggregate"}
+    )
     st.dataframe(export_df.sort_values("date", ascending=False), use_container_width=True, hide_index=True)
     csv_download_button(export_df, "combined_signals.csv")

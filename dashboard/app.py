@@ -75,7 +75,7 @@ with st.sidebar:
     st.markdown(
         '<div class="sidebar-footer">'
         "<strong>PSB Case — Liquidity Stress Monitor</strong><br>"
-        "LSI в разработке. Данные: ЦБ РФ, Минфин, ФНС."
+        "LSI Local/Global. Данные: ЦБ РФ, Минфин, ФНС, Росказна."
         "</div>",
         unsafe_allow_html=True,
     )

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +10,9 @@ from sklearn.decomposition import PCA
 from sklearn.ensemble import IsolationForest
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.preprocessing import StandardScaler
+
+# статусы берём из единого источника порогов — никаких магических 40/70 здесь
+from backend.src.services.lsi_thresholds import get_lsi_status as _get_status_from_thresholds
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -25,12 +27,87 @@ GLOBAL_MODEL_FILE = MODEL_DIR / "lsi_global_pipeline.joblib"
 LOCAL_MODEL_FILE = MODEL_DIR / "lsi_local_pipeline.joblib"
 
 PCA_COMPONENTS = 10
-TOP_N_PER_GROUP = 2
 CONTAMINATION = 0.06
 RANDOM_STATE = 42
 EMA_ALPHA = 0.05
 LOCAL_WINDOW_DAYS = 365
 MIN_LOCAL_ROWS = 120
+MIN_LSI_FEATURES = 10
+FEATURE_SELECTION_METHOD = "fixed_stress_whitelist"
+
+LSI_FEATURE_CANDIDATES = [
+    "m1_spread_mad_score",
+    "m1_spread_relative_mad_score",
+    "m1_spread_delta_mad_score",
+    "m1_reserve_load_mad_score",
+    "m1_ruonia_mad_score",
+    "m1_flag_end_of_period",
+    "m1_signal",
+    "m1_signal_final",
+    "m2_Flag_Demand",
+    "m2_MAD_score_cover",
+    "m2_MAD_score_rate_spread",
+    "m2_auction_flag",
+    "m3_cover_stress_score",
+    "m3_yield_stress_score",
+    "m3_Flag_Nedospros",
+    "m3_Flag_Perespros",
+    "m3_auction_flag",
+    "m4_Tax_Week_Flag",
+    "m4_Tax_Day_Strict",
+    "m4_MAD_tax_pressure",
+    "m4_MAD_tax_proximity",
+    "m4_Seasonal_Factor_raw",
+    "m5_cbr_liquidity_stress_mad_score",
+    "m5_cbr_liquidity_drain_mad_score",
+    "m5_roskazna_net_flow_stress_mad_score",
+    "m5_Flag_Budget_Drain",
+]
+
+
+MODULES = ["m1", "m2", "m3", "m4", "m5"]
+
+
+def compute_module_contributions(
+    scaled_matrix: np.ndarray,
+    pca: PCA,
+    features_list: list[str],
+) -> dict[str, np.ndarray]:
+    """Вычисляет приближенный вклад каждого модуля M1-M5 в LSI-оценку.
+
+    Метод — PCA-based weighted attribution (не SHAP, не причинная декомпозиция):
+    для каждого признака j вклад = |x_scaled[j]| * sum_k(evr[k] * |components[k,j]|),
+    где evr — explained_variance_ratio_, k — индекс главной компоненты.
+    Вклады нормируются до 100% (по строкам) и агрегируются по префиксу модуля.
+
+    Возвращает словарь {module_upper: ndarray вкладов в % по строкам}
+    """
+    evr = pca.explained_variance_ratio_            # (n_components,)
+    components = pca.components_                   # (n_components, n_features)
+
+    # "структурный вес" признака j в PCA — насколько он загружает компоненты, взвешенные по EVR
+    structural_weights = np.abs(components).T @ evr   # (n_features,)
+
+    # вклад признака j в строке i = |x_scaled[i,j]| * structural_weights[j]
+    feature_contrib = np.abs(scaled_matrix) * structural_weights[np.newaxis, :]  # (n_rows, n_features)
+
+    # нормировка до 100% по строкам
+    row_sums = feature_contrib.sum(axis=1, keepdims=True)
+    row_sums = np.where(row_sums == 0, 1.0, row_sums)
+    feature_contrib_pct = feature_contrib / row_sums * 100.0
+
+    # индексы признаков по модулям
+    module_indices: dict[str, list[int]] = {}
+    for j, feat_name in enumerate(features_list):
+        prefix = feat_name.split("_", 1)[0].upper()
+        module_indices.setdefault(prefix, []).append(j)
+
+    result: dict[str, np.ndarray] = {}
+    for module_upper in sorted(module_indices.keys()):
+        indices = module_indices[module_upper]
+        result[module_upper] = np.round(feature_contrib_pct[:, indices].sum(axis=1), 2)
+
+    return result
 
 
 def load_final_dataset(path: Path = FINAL_DATASET_FILE) -> pd.DataFrame:
@@ -47,41 +124,27 @@ def load_final_dataset(path: Path = FINAL_DATASET_FILE) -> pd.DataFrame:
     return data.sort_values("date").reset_index(drop=True)
 
 
-def _feature_group(column: str) -> str:
-    """Возвращает группу признака как в notebook final_chupappo"""
-    parts = column.split("_")
-    return "_".join(parts[:2])
-
-
-def select_lsi_features(data: pd.DataFrame, top_n: int = TOP_N_PER_GROUP) -> list[str]:
-    """Отбирает признаки по дисперсии внутри групп из первых двух частей имени"""
-    numeric_features = list(data.select_dtypes(include=[np.number]).columns)
-    if not numeric_features:
-        raise ValueError("В датасете нет числовых признаков для LSI")
-
-    feature_matrix = data[numeric_features].astype(float).fillna(0)
-    groups: dict[str, list[str]] = defaultdict(list)
-    for column in numeric_features:
-        groups[_feature_group(column)].append(column)
-
-    selected_features: list[str] = []
-    for columns in groups.values():
-        if len(columns) <= top_n:
-            selected_features.extend(columns)
-            continue
-        variances = feature_matrix[columns].var()
-        selected_features.extend(variances.nlargest(top_n).index.tolist())
+def select_lsi_features(data: pd.DataFrame) -> list[str]:
+    """Отбирает только согласованные стресс-признаки LSI"""
+    numeric_features = set(data.select_dtypes(include=[np.number]).columns)
+    selected_features = [
+        column
+        for column in LSI_FEATURE_CANDIDATES
+        if column in numeric_features
+    ]
+    if len(selected_features) < MIN_LSI_FEATURES:
+        missing_columns = [
+            column
+            for column in LSI_FEATURE_CANDIDATES
+            if column not in data.columns
+        ]
+        raise ValueError(
+            "Недостаточно стресс-признаков для LSI: "
+            f"{len(selected_features)} из {len(LSI_FEATURE_CANDIDATES)}. "
+            f"Отсутствуют: {missing_columns[:10]}"
+        )
 
     return selected_features
-
-
-def _get_status(lsi_value: float) -> str:
-    """Возвращает статус по шкале LSI 0-100"""
-    if lsi_value < 40:
-        return "ЗЕЛЕНЫЙ (Норма)"
-    if lsi_value < 70:
-        return "ЖЕЛТЫЙ (Повышенное внимание)"
-    return "КРАСНЫЙ (Стресс ликвидности)"
 
 
 def fit_lsi_artifact(
@@ -136,7 +199,7 @@ def fit_lsi_artifact(
         "ema_alpha": EMA_ALPHA,
         "contamination": CONTAMINATION,
         "random_state": RANDOM_STATE,
-        "top_n_per_group": TOP_N_PER_GROUP,
+        "feature_selection_method": FEATURE_SELECTION_METHOD,
         "pca_components": n_components,
         "window_days": window_days,
         "train_start": str(data["date"].min().date()),
@@ -144,15 +207,20 @@ def fit_lsi_artifact(
         "training_rows": int(len(data)),
     }
 
-    scores = pd.DataFrame(
-        {
-            "date": data["date"].to_numpy(),
-            f"lsi_{kind}": np.round(lsi_values, 2),
-            f"lsi_{kind}_raw": raw_scores,
-            f"lsi_{kind}_smoothed": smoothed_scores,
-            f"lsi_{kind}_status": [_get_status(value) for value in lsi_values],
-        }
-    )
+    # вклады модулей M1-M5 (PCA-based approximation)
+    module_contribs = compute_module_contributions(scaled_matrix, pca, features_list)
+
+    scores_dict: dict[str, object] = {
+        "date": data["date"].to_numpy(),
+        f"lsi_{kind}": np.round(lsi_values, 2),
+        f"lsi_{kind}_raw": raw_scores,
+        f"lsi_{kind}_smoothed": smoothed_scores,
+        f"lsi_{kind}_status": [_get_status_from_thresholds(value) for value in lsi_values],
+    }
+    for module_upper, contrib_array in module_contribs.items():
+        scores_dict[f"lsi_{kind}_contrib_{module_upper.lower()}"] = contrib_array
+
+    scores = pd.DataFrame(scores_dict)
 
     return artifact, scores
 

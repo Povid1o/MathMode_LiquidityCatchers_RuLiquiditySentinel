@@ -12,22 +12,15 @@ import pandas as pd
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from backend.src.services.lsi_thresholds import DEFAULT_THRESHOLD_PROFILE
+from backend.src.services.lsi_thresholds import get_lsi_status
+from backend.src.services.lsi_thresholds import get_threshold_profile
 from backend.src.services.lsi_training_service import GLOBAL_MODEL_FILE
 from backend.src.services.lsi_training_service import LOCAL_MODEL_FILE
+from backend.src.services.lsi_training_service import compute_module_contributions
 
 
-LSI_GREEN_MAX = 40.0
-LSI_YELLOW_MAX = 70.0
 EMA_ALPHA = 0.05
-
-
-def get_lsi_status(lsi_value: float) -> str:
-    """Возвращает статус светофора по шкале LSI 0-100"""
-    if lsi_value < LSI_GREEN_MAX:
-        return "ЗЕЛЕНЫЙ (Норма)"
-    if lsi_value < LSI_YELLOW_MAX:
-        return "ЖЕЛТЫЙ (Повышенное внимание)"
-    return "КРАСНЫЙ (Стресс ликвидности)"
 
 
 def _load_model_components(model_path: Path) -> dict[str, Any]:
@@ -125,6 +118,12 @@ def _score_with_artifact(
         for scaled_row in scaled_matrix
     ]
 
+    # вклады модулей M1-M5 (PCA-based approximation, не SHAP)
+    module_contribs = compute_module_contributions(scaled_matrix, pca, features_list)
+    for module_upper, contrib_array in module_contribs.items():
+        col_name = f"lsi_{prefix}_contrib_{module_upper.lower()}"
+        scored[col_name] = np.round(contrib_array, 2)
+
     output = pd.DataFrame(index=result.index)
     for column in scored.columns:
         if column.startswith("top_drivers") or column.endswith("_status"):
@@ -200,31 +199,66 @@ def add_lsi_scores(
     return result
 
 
+def _extract_module_contributions(row: pd.Series, *, prefix: str) -> dict[str, float]:
+    """Извлекает вклады модулей M1-M5 из строки датафрейма для ответа LSI"""
+    result: dict[str, float] = {}
+    for module in ["m1", "m2", "m3", "m4", "m5"]:
+        col = f"lsi_{prefix}_contrib_{module}"
+        if col in row.index and pd.notna(row[col]):
+            result[module.upper()] = float(row[col])
+    return result
+
+
 def get_lsi_prediction(
     new_data_df: pd.DataFrame,
+    *,
+    threshold_profile: str = DEFAULT_THRESHOLD_PROFILE,
 ) -> dict[str, object]:
-    """Формирует ответ LSI для frontend или LLM"""
+    """Формирует ответ LSI для frontend или LLM
+
+    threshold_profile — имя профиля порогов из lsi_thresholds.LSI_THRESHOLD_PROFILES.
+    Статусы (ЗЕЛЕНЫЙ/ЖЕЛТЫЙ/КРАСНЫЙ) пересчитываются из численных LSI-значений
+    по выбранному профилю. Сами числа LSI не меняются — меняется только интерпретация.
+    """
     lsi_data = add_lsi_scores(new_data_df)
     latest_row = lsi_data.iloc[-1]
     today_lsi = float(latest_row["LSI_Index"])
     row_date = latest_row["date"]
     date_value = row_date.date() if hasattr(row_date, "date") else row_date
 
+    profile_config = get_threshold_profile(threshold_profile)
+
+    # Статус пересчитываем по выбранному профилю — НЕ берём из df,
+    # так как df содержит статусы по DEFAULT_THRESHOLD_PROFILE
     response: dict[str, object] = {
         "date": str(date_value),
         "LSI_Index": today_lsi,
-        "status": str(latest_row["lsi_status"]),
+        "status": get_lsi_status(today_lsi, profile=threshold_profile),
         "top_drivers": latest_row["top_drivers"],
+        # метаданные порогового профиля
+        "threshold_profile": threshold_profile,
+        "threshold_green_max": float(profile_config["green_max"]),
+        "threshold_yellow_max": float(profile_config["yellow_max"]),
+        "threshold_description": str(profile_config["description"]),
     }
 
     if "LSI_Local" in latest_row and pd.notna(latest_row["LSI_Local"]):
-        response["LSI_Local"] = float(latest_row["LSI_Local"])
-        response["local_status"] = str(latest_row["lsi_local_status"])
+        local_val = float(latest_row["LSI_Local"])
+        response["LSI_Local"] = local_val
+        response["local_status"] = get_lsi_status(local_val, profile=threshold_profile)
         response["local_top_drivers"] = latest_row["top_drivers_local"]
+        response["local_module_contributions"] = _extract_module_contributions(
+            latest_row, prefix="local"
+        )
+
     if "LSI_Global" in latest_row and pd.notna(latest_row["LSI_Global"]):
-        response["LSI_Global"] = float(latest_row["LSI_Global"])
-        response["global_status"] = str(latest_row["lsi_global_status"])
+        global_val = float(latest_row["LSI_Global"])
+        response["LSI_Global"] = global_val
+        response["global_status"] = get_lsi_status(global_val, profile=threshold_profile)
         response["global_top_drivers"] = latest_row["top_drivers_global"]
+        response["global_module_contributions"] = _extract_module_contributions(
+            latest_row, prefix="global"
+        )
 
     return response
 

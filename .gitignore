@@ -16,6 +16,14 @@ data/raw/treasury_funds/roskazna_pages/
 !data/processed/final_ml_dataset.parquet
 !data/processed/lsi_scores.csv
 !data/processed/lsi_scores.parquet
+!data/processed/lsi_backtest_scores.csv
+!data/processed/lsi_backtest_scores.parquet
+!data/processed/lsi_backtest_sensitivity.csv
+!data/processed/lsi_backtest_sensitivity.parquet
+!data/processed/lsi_threshold_calibration.csv
+!data/processed/lsi_threshold_calibration.parquet
+!data/processed/lsi_threshold_metrics.csv
+!data/processed/lsi_threshold_metrics.parquet
 *.dat
 *.efx
 *.gbr

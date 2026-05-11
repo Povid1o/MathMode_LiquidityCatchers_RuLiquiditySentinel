@@ -7,9 +7,12 @@ from dashboard.config import DATASETS
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
+THRESHOLD_METRICS_FILE = PROJECT_ROOT / "data" / "processed" / "lsi_threshold_metrics.csv"
 
 from backend.src.services.lsi_prediction_service import add_lsi_scores
 from backend.src.services.lsi_prediction_service import get_lsi_prediction
+from backend.src.services.lsi_thresholds import DEFAULT_THRESHOLD_PROFILE
+from backend.src.services.lsi_thresholds import get_threshold_profile
 from backend.src.services.lsi_training_service import GLOBAL_MODEL_FILE
 from backend.src.services.lsi_training_service import LOCAL_MODEL_FILE
 
@@ -84,10 +87,27 @@ def load_lsi() -> pd.DataFrame:
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def load_lsi_response() -> dict[str, object]:
-    """Возвращает последний LSI-ответ для frontend или LLM"""
+def load_lsi_response(threshold_profile: str = DEFAULT_THRESHOLD_PROFILE) -> dict[str, object]:
+    """Возвращает последний LSI-ответ для заданного порогового профиля.
+
+    Числовые LSI-значения не пересчитываются — меняются только статусы (ЗЕЛЕНЫЙ/ЖЕЛТЫЙ/КРАСНЫЙ).
+    Кеш учитывает threshold_profile: каждый профиль кешируется отдельно.
+    """
     final = load_final()
-    return get_lsi_prediction(final)
+    return get_lsi_prediction(final, threshold_profile=threshold_profile)
+
+
+def load_threshold_profile(profile: str = DEFAULT_THRESHOLD_PROFILE) -> dict[str, object]:
+    """Возвращает конфигурацию порогового профиля LSI для dashboard"""
+    return get_threshold_profile(profile)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_threshold_metrics() -> pd.DataFrame:
+    """Загружает метрики качества порогов LSI"""
+    if not THRESHOLD_METRICS_FILE.exists():
+        return pd.DataFrame()
+    return pd.read_csv(THRESHOLD_METRICS_FILE)
 
 
 def dataset_summary() -> dict:

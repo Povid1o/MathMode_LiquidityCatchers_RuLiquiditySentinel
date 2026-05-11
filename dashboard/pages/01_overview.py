@@ -5,23 +5,26 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-from dashboard.data.loader import dataset_summary, load_lsi, load_lsi_response
+from dashboard.data.loader import (
+    dataset_summary, load_lsi, load_lsi_response,
+    load_threshold_metrics, load_threshold_profile,
+)
 from dashboard.components.metrics import module_status_row
 from dashboard.config import COLORS, MODULE_LABELS, PLOTLY_TEMPLATE
+from backend.src.services.lsi_thresholds import DEFAULT_THRESHOLD_PROFILE, LSI_THRESHOLD_PROFILES
 
 st.set_page_config(page_title="Обзор системы", layout="wide")
 
 st.title("Обзор системы мониторинга стресса ликвидности")
 
-# Check if LSI is available
+# Загружаем числовые LSI-значения заранее — они не зависят от профиля
 try:
     with st.spinner("Загрузка LSI..."):
         df_lsi = load_lsi()
-        lsi_response = load_lsi_response()
     lsi_available = "lsi" in df_lsi.columns
 except Exception as e:
     lsi_available = False
-    lsi_response = {}
+    df_lsi = pd.DataFrame()
     st.warning(f"Ошибка при загрузке LSI: {e}", icon="⚠️")
 
 st.markdown("---")
@@ -73,16 +76,58 @@ st.markdown("---")
 st.subheader("Индекс стресса ликвидности (LSI)")
 
 if lsi_available:
+    # ---------------------------------------------------------------
+    # Selector порогового профиля
+    # Выбор сохраняется в st.session_state["lsi_threshold_profile"]
+    # и используется на всех страницах dashboard через session_state.
+    # ---------------------------------------------------------------
+    _profile_labels: dict[str, str] = {
+        "backtest_sensitive": "backtest_sensitive (30/60) — выше чувствительность к стрессу",
+        "conservative":       "conservative (40/70) — меньше ложных тревог",
+    }
+    _profile_options = list(_profile_labels.keys())
+
+    # Инициализируем session_state значением по умолчанию из backend
+    if "lsi_threshold_profile" not in st.session_state:
+        st.session_state["lsi_threshold_profile"] = DEFAULT_THRESHOLD_PROFILE
+
+    selected_profile: str = st.radio(
+        "Пороговый профиль",
+        options=_profile_options,
+        format_func=lambda p: _profile_labels[p],
+        index=_profile_options.index(
+            st.session_state.get("lsi_threshold_profile", DEFAULT_THRESHOLD_PROFILE)
+        ),
+        key="lsi_threshold_profile",
+        horizontal=True,
+        help=(
+            "conservative — меньше ложных красных сигналов; "
+            "backtest_sensitive — выше Event Recall Red, но больше False Red Alerts/year. "
+            "Числовые значения LSI не меняются — только статус (ЗЕЛЕНЫЙ/ЖЕЛТЫЙ/КРАСНЫЙ)."
+        ),
+    )
+
+    # Загружаем ответ модели с учётом выбранного профиля.
+    # Кеш st.cache_data учитывает threshold_profile как ключ.
+    with st.spinner("Применяем профиль..."):
+        lsi_response = load_lsi_response(selected_profile)
+
+    # --- Извлекаем данные из ответа ---
+    thr_profile = str(lsi_response.get("threshold_profile", selected_profile))
+    thr_green   = float(lsi_response.get("threshold_green_max", 40.0))
+    thr_yellow  = float(lsi_response.get("threshold_yellow_max", 70.0))
+
     st.success(
         "**✓ LSI рассчитан и доступен.**  \n"
         "LSI Local обучается на последнем 365-дневном окне, LSI Global — на всей истории. "
         "Обе версии используют StandardScaler + PCA + IsolationForest + EMA + MinMaxScaler.",
     )
-    local_lsi = lsi_response.get("LSI_Local", lsi_response["LSI_Index"])
-    global_lsi = lsi_response.get("LSI_Global")
+
+    local_lsi    = lsi_response.get("LSI_Local", lsi_response["LSI_Index"])
+    global_lsi   = lsi_response.get("LSI_Global")
     local_status = str(lsi_response.get("local_status", lsi_response["status"]))
     global_status = str(lsi_response.get("global_status", "н/д"))
-    local_drivers = lsi_response.get("local_top_drivers", lsi_response.get("top_drivers", []))
+    local_drivers  = lsi_response.get("local_top_drivers", lsi_response.get("top_drivers", []))
     global_drivers = lsi_response.get("global_top_drivers", [])
 
     def status_value(label: str, status: str) -> None:
@@ -114,7 +159,10 @@ if lsi_available:
     with c4:
         status_value("Статус Global", global_status)
 
-    st.caption("Пороги светофора: 40 / 70")
+    st.caption(
+        f"Пороговый профиль: **{thr_profile}** — "
+        f"зелёный < {int(thr_green)}, жёлтый {int(thr_green)}–{int(thr_yellow)}, красный ≥ {int(thr_yellow)}"
+    )
     if local_drivers:
         st.caption("Local drivers: " + ", ".join(local_drivers))
     if global_drivers:
@@ -125,8 +173,62 @@ if lsi_available:
             "Это дата данных, а не обязательно сегодняшняя календарная дата."
         )
 
+    # -------------------------------------------------------------------
+    # Expander: сравнение профилей и помощь в выборе
+    # -------------------------------------------------------------------
+    with st.expander("Как выбрать пороговый профиль?"):
+        st.markdown(
+            """
+**`backtest_sensitive` (30 / 60) — чувствительный профиль:**
+- ✅ Event Recall Red = **100%** по Global: все три стресс-эпизода детектированы красным
+- ✅ Декабрь 2014: 1 красный день + 23 жёлтых (события видны заранее)
+- ⚠️ Global FP rate ≈ **10.5%** (~25 ложных красных дней в год вне кризисов)
+- ⚠️ Local FP rate ≈ **47%** (Local модель обучена в спокойный период)
+- Красный сигнал требует ручного подтверждения аналитиком
+
+**`conservative` (40 / 70) — консервативный профиль:**
+- ✅ Global FP rate ≈ **3.95%** (~9 ложных красных дней в год)
+- ⚠️ Event Recall Red = **33%** по Global: Декабрь 2014 и Август 2023 пропускаются красным
+- Декабрь 2014: 0 красных, 19 жёлтых из 23 — событие видно, но не как стресс
+
+**Вывод:** если приоритет — не пропустить кризис, выбирайте `backtest_sensitive`.
+Если важнее снизить нагрузку на аналитика — `conservative`.
+
+Числовые значения LSI не меняются при переключении — меняется только интерпретация.
+"""
+        )
+        # Таблица метрик профилей
+        threshold_metrics = load_threshold_metrics()
+        if not threshold_metrics.empty:
+            _profiles_df = pd.DataFrame([
+                {"Профиль": "backtest_sensitive", "threshold_green": 30, "threshold_red": 60},
+                {"Профиль": "conservative",       "threshold_green": 40, "threshold_red": 70},
+            ])
+            metrics_view = _profiles_df.merge(
+                threshold_metrics,
+                on=["threshold_green", "threshold_red"],
+                how="left",
+            )
+            metrics_view = metrics_view[[
+                "Профиль", "model",
+                "event_recall_yellow_pct", "event_recall_red_pct",
+                "lead_time_yellow_days", "lead_time_red_days",
+                "false_red_alerts_per_year",
+            ]].rename(columns={
+                "model": "Модель",
+                "event_recall_yellow_pct": "Recall Yellow, %",
+                "event_recall_red_pct":    "Recall Red, %",
+                "lead_time_yellow_days":   "Lead Yellow, дн.",
+                "lead_time_red_days":      "Lead Red, дн.",
+                "false_red_alerts_per_year": "False Red/year",
+            })
+            st.dataframe(metrics_view.round(2), use_container_width=True, hide_index=True)
+
+    # -------------------------------------------------------------------
+    # LSI-графики с линиями активного профиля
+    # -------------------------------------------------------------------
     def lsi_chart(column: str, title: str, color: str) -> go.Figure:
-        """Строит график LSI с порогами светофора"""
+        """Строит график LSI с линиями активного порогового профиля"""
         chart_df = df_lsi[["date", column]].dropna()
         fig = go.Figure()
         fig.add_trace(go.Scatter(
@@ -139,19 +241,19 @@ if lsi_available:
             name=title,
         ))
         fig.add_hline(
-            y=70,
+            y=thr_yellow,
             line_dash="dash",
             line_color=COLORS["danger"],
             opacity=0.7,
-            annotation_text="Стресс",
+            annotation_text=f"Стресс ≥{int(thr_yellow)}",
             annotation_position="right",
         )
         fig.add_hline(
-            y=40,
+            y=thr_green,
             line_dash="dot",
             line_color=COLORS["warn"],
             opacity=0.7,
-            annotation_text="Повышенное внимание",
+            annotation_text=f"Внимание ≥{int(thr_green)}",
             annotation_position="left",
         )
         fig.update_layout(
@@ -185,6 +287,63 @@ if lsi_available:
             )
         else:
             st.info("LSI Global недоступен.")
+
+    # --- Вклад модулей (числа не зависят от профиля — только от модели PCA) ---
+    local_contribs  = lsi_response.get("local_module_contributions", {})
+    global_contribs = lsi_response.get("global_module_contributions", {})
+
+    if local_contribs or global_contribs:
+        st.markdown("---")
+        st.subheader("Вклад модулей в LSI (последняя дата)")
+        st.caption(
+            "⚠️ Вклад рассчитан как **PCA-based approximation** по whitelist стресс-признаков "
+            "(structural_weight[j] = Σₖ evr[k]·|components[k,j]|, нормировано до 100% по строке). "
+            "Это **не SHAP** и не причинная декомпозиция — метрика показывает относительную "
+            "нагрузку модуля на первые главные компоненты, а не его причинный вклад в LSI."
+        )
+
+        def contrib_bar(contribs: dict[str, float], title: str, color: str) -> go.Figure:
+            modules = sorted(contribs.keys())
+            values = [contribs[m] for m in modules]
+            labels = [MODULE_LABELS.get(m.lower(), m) for m in modules]
+            fig = go.Figure(go.Bar(
+                x=modules,
+                y=values,
+                text=[f"{v:.1f}%" for v in values],
+                textposition="outside",
+                marker_color=color,
+                customdata=labels,
+                hovertemplate="%{customdata}<br>Вклад: %{y:.1f}%<extra></extra>",
+            ))
+            fig.update_layout(
+                title=title,
+                template=PLOTLY_TEMPLATE,
+                height=300,
+                yaxis_title="Вклад, %",
+                yaxis=dict(range=[0, max(values) * 1.25 if values else 100]),
+                margin=dict(l=40, r=20, t=50, b=40),
+                showlegend=False,
+            )
+            return fig
+
+        contrib_col1, contrib_col2 = st.columns(2)
+        with contrib_col1:
+            if local_contribs:
+                st.plotly_chart(
+                    contrib_bar(local_contribs, "Вклад модулей — LSI Local", COLORS["primary"]),
+                    use_container_width=True,
+                )
+            else:
+                st.info("Вклад модулей Local недоступен.")
+        with contrib_col2:
+            if global_contribs:
+                st.plotly_chart(
+                    contrib_bar(global_contribs, "Вклад модулей — LSI Global", COLORS["secondary"]),
+                    use_container_width=True,
+                )
+            else:
+                st.info("Вклад модулей Global недоступен.")
+
 else:
     st.error(
         "**LSI недоступен.** Модели не найдены в `models/lsi_global_pipeline.joblib` "
