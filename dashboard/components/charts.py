@@ -9,9 +9,11 @@ from dashboard.config import COLORS, PLOTLY_TEMPLATE, MAD_STRESS_THRESHOLD
 def _base_layout(**kwargs) -> dict:
     return dict(
         template=PLOTLY_TEMPLATE,
-        margin=dict(l=40, r=20, t=40, b=40),
+        margin=dict(l=40, r=20, t=88, b=40),
         hovermode="x unified",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        title_y=0.98,
+        title_yanchor="top",
+        legend=dict(orientation="h", yanchor="top", y=1.0, xanchor="left", x=0),
         **kwargs,
     )
 
@@ -196,9 +198,11 @@ def dual_axis_chart(
     fig.update_layout(
         title=title, height=height,
         template=PLOTLY_TEMPLATE,
-        margin=dict(l=40, r=40, t=40, b=40),
+        margin=dict(l=40, r=40, t=88, b=40),
         hovermode="x unified",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        title_y=0.98,
+        title_yanchor="top",
+        legend=dict(orientation="h", yanchor="top", y=1.0, xanchor="left", x=0),
     )
     return fig
 

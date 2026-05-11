@@ -4,8 +4,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import streamlit as st
 from dashboard.data.loader import load_m3
-from dashboard.components.charts import event_scatter, bar_chart, mad_score_bar, flag_timeline
-from dashboard.components.metrics import latest_value_metric, mad_status_metric, quick_period_filter, freshness_header, csv_download_button
+from dashboard.components.charts import mad_score_bar, flag_timeline
+from dashboard.components.metrics import latest_value_metric, quick_period_filter, freshness_header, csv_download_button
 
 st.set_page_config(page_title="M3 — ОФЗ", layout="wide")
 st.title("M3 — Размещение ОФЗ")
@@ -85,39 +85,6 @@ fig_cover.update_layout(
     margin=dict(l=40, r=20, t=40, b=40),
 )
 st.plotly_chart(fig_cover, use_container_width=True)
-
-# --- Yield spread ---
-st.subheader("Доходность и спред")
-st.caption("Yield spread — приближённый спред к кривой ОФЗ (не кривая нулевых купонов, используйте с осторожностью).")
-tab1, tab2 = st.tabs(["Weighted Yield", "Yield Spread (прибл.)"])
-
-with tab1:
-    yld_df2 = df.dropna(subset=["weighted_yield"])
-    if not yld_df2.empty:
-        fig_yield = event_scatter(
-            yld_df2, x="date", y="weighted_yield",
-            title="Средневзвешенная доходность размещения ОФЗ",
-            yaxis_title="Доходность, % годовых",
-            height=320,
-        )
-        st.plotly_chart(fig_yield, use_container_width=True)
-    else:
-        st.info("Данные по доходности отсутствуют.")
-
-with tab2:
-    yld_sp_df = df.dropna(subset=["yield_spread"])
-    if not yld_sp_df.empty:
-        fig_ysp = event_scatter(
-            yld_sp_df, x="date", y="yield_spread",
-            title="Yield Spread (приближённый)",
-            yaxis_title="Спред, п.п.",
-            height=320,
-        )
-        st.plotly_chart(fig_ysp, use_container_width=True)
-    else:
-        st.info("Данные по спреду доходности отсутствуют.")
-
-st.markdown("---")
 
 # --- MAD scores ---
 st.subheader("MAD-оценки")

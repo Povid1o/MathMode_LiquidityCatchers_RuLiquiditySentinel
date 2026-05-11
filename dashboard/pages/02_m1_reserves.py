@@ -38,8 +38,7 @@ with c3:
 with c4:
     reliable = df["m1_reliable"].iloc[-1] if "m1_reliable" in df.columns else None
     if reliable is not None:
-        label = "✓ Достоверный" if reliable == 1 else "✗ Предварительный"
-        color = "normal" if reliable == 1 else "inverse"
+        label = "✓ Сигнал рассчитан" if reliable == 1 else "✗ Недостаточно истории"
         st.metric("Статус сигнала", label)
     else:
         st.metric("Статус сигнала", "н/д")

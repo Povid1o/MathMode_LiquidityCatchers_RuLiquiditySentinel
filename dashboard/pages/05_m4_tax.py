@@ -7,9 +7,9 @@ import plotly.graph_objects as go
 import plotly.express as px
 import pandas as pd
 from dashboard.data.loader import load_m4
-from dashboard.components.charts import line_chart, mad_score_bar
+from dashboard.components.charts import line_chart
 from dashboard.components.metrics import latest_value_metric, quick_period_filter, freshness_header, csv_download_button
-from dashboard.config import COLORS, PLOTLY_TEMPLATE
+from dashboard.config import COLORS, MAD_STRESS_THRESHOLD, PLOTLY_TEMPLATE
 
 st.set_page_config(page_title="M4 — Налоги", layout="wide")
 st.title("M4 — Налоговый календарь")
@@ -90,12 +90,50 @@ st.markdown("---")
 st.subheader("MAD-оценки налогового давления")
 tab1, tab2 = st.tabs(["MAD Tax Pressure", "MAD Tax Proximity"])
 
+
+def m4_mad_chart(y: str, title: str) -> go.Figure:
+    """Строит контрастный MAD-график для темной темы"""
+    vals = df[y].fillna(0)
+    colors = [
+        "#ff4d4f" if abs(value) >= MAD_STRESS_THRESHOLD else
+        "#ffcf33" if abs(value) >= 1.5 else
+        "#6be675"
+        for value in vals
+    ]
+    fig = go.Figure(go.Bar(
+        x=df["date"],
+        y=vals,
+        marker=dict(
+            color=colors,
+            line=dict(color="rgba(255,255,255,0.35)", width=0.4),
+        ),
+        name=title,
+    ))
+    fig.add_hline(y=0, line_dash="solid", line_color="rgba(255,255,255,0.55)", opacity=0.8)
+    fig.add_hline(y=MAD_STRESS_THRESHOLD, line_dash="dot", line_color="#ff4d4f", opacity=0.9)
+    fig.add_hline(y=-MAD_STRESS_THRESHOLD, line_dash="dot", line_color="#ff4d4f", opacity=0.9)
+    fig.update_layout(
+        title=title,
+        template=PLOTLY_TEMPLATE,
+        height=340,
+        yaxis_title="MAD score",
+        hovermode="x unified",
+        margin=dict(l=40, r=20, t=70, b=40),
+        plot_bgcolor="#11151d",
+        paper_bgcolor="#0e1117",
+        showlegend=False,
+        xaxis=dict(gridcolor="rgba(255,255,255,0.08)"),
+        yaxis=dict(gridcolor="rgba(255,255,255,0.14)", zeroline=False),
+    )
+    return fig
+
+
 with tab1:
-    fig_mad_tp = mad_score_bar(df, x="date", y="MAD_tax_pressure", title="MAD-score налогового давления")
+    fig_mad_tp = m4_mad_chart("MAD_tax_pressure", "MAD-score налогового давления")
     st.plotly_chart(fig_mad_tp, use_container_width=True)
 
 with tab2:
-    fig_mad_tpr = mad_score_bar(df, x="date", y="MAD_tax_proximity", title="MAD-score налоговой близости")
+    fig_mad_tpr = m4_mad_chart("MAD_tax_proximity", "MAD-score налоговой близости")
     st.plotly_chart(fig_mad_tpr, use_container_width=True)
 
 st.markdown("---")

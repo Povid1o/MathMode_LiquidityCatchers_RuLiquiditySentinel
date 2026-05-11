@@ -73,17 +73,24 @@ def proxy_score_note() -> None:
 def freshness_header(df: pd.DataFrame, module_name: str) -> None:
     """Shows a small colored freshness indicator for the module."""
     last_date = df["date"].max()
-    days_ago = (pd.Timestamp.now() - last_date).days
-    if days_ago > 30:
+    days_delta = (pd.Timestamp.now().normalize() - last_date.normalize()).days
+    if days_delta < 0:
+        freshness_text = f"через {abs(days_delta)} дн."
+    elif days_delta == 0:
+        freshness_text = "сегодня"
+    else:
+        freshness_text = f"{days_delta} дн. назад"
+
+    if days_delta > 30:
         color, icon = "#d62728", "🔴"
-    elif days_ago > 14:
+    elif days_delta > 14:
         color, icon = "#bcbd22", "🟡"
     else:
         color, icon = "#2ca02c", "🟢"
     st.markdown(
         f'<p style="color:{color};font-size:0.82em;margin:0 0 0.8rem 0">'
         f'{icon} {module_name}: данные до '
-        f'<strong>{last_date.strftime("%d.%m.%Y")}</strong> ({days_ago} дн. назад)</p>',
+        f'<strong>{last_date.strftime("%d.%m.%Y")}</strong> ({freshness_text})</p>',
         unsafe_allow_html=True,
     )
 

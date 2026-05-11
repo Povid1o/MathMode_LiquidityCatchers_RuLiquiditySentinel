@@ -4,7 +4,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import streamlit as st
 from dashboard.data.loader import load_m2
-from dashboard.components.charts import event_scatter, mad_score_bar, flag_timeline
+from dashboard.components.charts import event_scatter, flag_timeline
 from dashboard.components.metrics import latest_value_metric, mad_status_metric, quick_period_filter, freshness_header, csv_download_button
 
 st.set_page_config(page_title="M2 — Репо ЦБ", layout="wide")
@@ -71,26 +71,6 @@ if not rate_df.empty:
     st.plotly_chart(fig_rate, use_container_width=True)
 else:
     st.info("Данные по спреду ставки отсутствуют в выбранном периоде.")
-
-st.markdown("---")
-
-# --- MAD scores ---
-st.subheader("MAD-оценки аномальности")
-tab1, tab2 = st.tabs(["MAD Cover Ratio", "MAD Rate Spread"])
-
-with tab1:
-    fig_mad_cover = mad_score_bar(df, x="date", y="MAD_score_cover", title="MAD-score покрытия")
-    st.plotly_chart(fig_mad_cover, use_container_width=True)
-
-with tab2:
-    rate_mad_df = df.dropna(subset=["MAD_score_rate_spread"])
-    if not rate_mad_df.empty:
-        fig_mad_rate = mad_score_bar(rate_mad_df, x="date", y="MAD_score_rate_spread", title="MAD-score спреда ставки")
-        st.plotly_chart(fig_mad_rate, use_container_width=True)
-    else:
-        st.info("MAD-score по спреду ставки недоступен для выбранного периода.")
-
-st.markdown("---")
 
 # --- Flag timeline ---
 st.subheader("Флаги аномального спроса")

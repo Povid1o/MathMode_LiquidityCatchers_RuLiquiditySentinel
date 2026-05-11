@@ -93,8 +93,10 @@ if not liq_df.empty:
         hovermode="x unified",
         yaxis_title="млрд руб.",
         yaxis2=dict(title="Изменение (5д), млрд руб.", overlaying="y", side="right"),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
-        margin=dict(l=40, r=60, t=40, b=40),
+        title_y=0.98,
+        title_yanchor="top",
+        legend=dict(orientation="h", yanchor="top", y=1.0, xanchor="left", x=0),
+        margin=dict(l=40, r=60, t=88, b=40),
     )
     st.plotly_chart(fig_liq, use_container_width=True)
 else:

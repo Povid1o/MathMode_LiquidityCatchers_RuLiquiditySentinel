@@ -28,33 +28,73 @@ if df.empty:
     st.warning("Нет данных для выбранного периода.")
     st.stop()
 
+as_of_date = df["date"].max()
+st.caption(
+    f"Сводные дневные показатели и LSI показаны на дату финального ML dataset: "
+    f"{as_of_date.strftime('%d.%m.%Y')}. Это не обязательно сегодняшняя календарная дата."
+)
+
 # --- Compute proxy score ---
 mad_cols = {
     "m1_spread_mad_score": "M1 Спред",
     "m2_MAD_score_cover": "M2 Cover",
-    "m3_MAD_score_cover": "M3 Cover",
+    "m3_cover_stress_score": "M3 Cover",
     "m4_MAD_tax_pressure": "M4 Давление",
 }
 avail = [c for c in mad_cols if c in df.columns]
 df["_proxy_score"] = df[avail].abs().mean(axis=1)
 
+
+def signal_level(value: float) -> str:
+    """Возвращает текстовый уровень сигнала"""
+    if abs(value) >= MAD_STRESS_THRESHOLD:
+        return "🔴 Стресс"
+    if abs(value) >= 1.0:
+        return "🟡 Умеренный"
+    return "🟢 Норма"
+
+
+def latest_event_value(column: str, flag_column: str) -> tuple[float | None, str]:
+    """Возвращает последнее значение по событийному модулю"""
+    if column not in df.columns or flag_column not in df.columns:
+        return None, "нет данных"
+    event_df = df[(df[flag_column] == 1) & df[column].notna()]
+    if event_df.empty:
+        return None, "нет события"
+    row = event_df.iloc[-1]
+    return float(row[column]), f"аукцион {row['date'].strftime('%d.%m.%Y')}"
+
 # --- KPI row ---
 st.subheader("Текущие сигналы")
-cols = st.columns(len(avail) + 1)
-for i, col in enumerate(avail):
+st.caption(
+    "M1 и M4 читаются на последнюю дневную дату. "
+    "M2 и M3 разреженные, поэтому показывается последний аукцион, а не искусственный ноль в день без аукциона."
+)
+
+metric_cards = [
+    ("M1 Спред", "m1_spread_mad_score", None),
+    ("M2 Cover", "m2_MAD_score_cover", "m2_auction_flag"),
+    ("M3 Cover", "m3_cover_stress_score", "m3_auction_flag"),
+    ("M4 Давление", "m4_MAD_tax_pressure", None),
+]
+
+cols = st.columns(len(metric_cards) + 1)
+for i, (label, col, flag_col) in enumerate(metric_cards):
     with cols[i]:
-        val = df[col].dropna().iloc[-1] if not df[col].dropna().empty else None
-        label = mad_cols[col]
-        if val is not None:
-            if abs(val) >= MAD_STRESS_THRESHOLD:
-                level = "🔴 Стресс"
-            elif abs(val) >= 1.0:
-                level = "🟡 Умеренный"
-            else:
-                level = "🟢 Норма"
-            st.metric(label, f"{val:.2f}", delta=level, delta_color="off")
+        if col not in df.columns:
+            st.metric(label, "н/д", delta="нет колонки", delta_color="off")
+            continue
+        if flag_col:
+            val, note = latest_event_value(col, flag_col)
         else:
-            st.metric(label, "н/д")
+            val = df[col].dropna().iloc[-1] if not df[col].dropna().empty else None
+            note = "последняя дата"
+            if label == "M4 Давление" and val == 0:
+                note = "нет налогового окна"
+        if val is None:
+            st.metric(label, "н/д", delta=note, delta_color="off")
+        else:
+            st.metric(label, f"{val:.2f}", delta=f"{signal_level(val)} · {note}", delta_color="off")
 
 with cols[-1]:
     proxy_val = df["_proxy_score"].dropna().iloc[-1] if not df["_proxy_score"].dropna().empty else None
@@ -65,7 +105,7 @@ with cols[-1]:
             level = "🟡 Умеренный"
         else:
             level = "🟢 Норма"
-        st.metric("PROXY Score ⚠️", f"{proxy_val:.2f}", delta=level, delta_color="off")
+        st.metric("PROXY Score ⚠️", f"{proxy_val:.2f}", delta=f"{level} · {as_of_date.strftime('%d.%m.%Y')}", delta_color="off")
 
 st.markdown("---")
 
@@ -109,22 +149,33 @@ st.plotly_chart(fig, use_container_width=True)
 st.markdown("---")
 
 # --- LSI chart (if available) ---
-if "lsi" in df.columns:
+lsi_columns = {
+    "lsi_local": ("LSI Local", COLORS["primary"]),
+    "lsi_global": ("LSI Global", COLORS["secondary"]),
+}
+available_lsi_columns = {col: meta for col, meta in lsi_columns.items() if col in df.columns}
+if available_lsi_columns or "lsi" in df.columns:
     st.subheader("LSI — Индекс стресса ликвидности")
-    st.caption("Рассчитан IsolationForest на основе 98 признаков (М1–М5). Шкала 0-100: <40 норма, 40-70 внимание, ≥70 стресс.")
-
-    lsi_df = df[["date", "lsi"]].dropna()
+    st.caption(
+        "LSI Local обучается на последнем 365-дневном окне, LSI Global — на всей истории. "
+        "Шкала 0-100: <40 норма, 40-70 внимание, ≥70 стресс."
+    )
 
     fig_lsi = go.Figure()
-    fig_lsi.add_trace(go.Scatter(
-        x=lsi_df["date"],
-        y=lsi_df["lsi"],
-        mode="lines",
-        fill="tozeroy",
-        fillcolor="rgba(31,119,180,0.15)",
-        line=dict(color=COLORS["primary"], width=2),
-        name="LSI",
-    ))
+    if not available_lsi_columns and "lsi" in df.columns:
+        available_lsi_columns = {"lsi": ("LSI", COLORS["primary"])}
+
+    for col, (label, color) in available_lsi_columns.items():
+        lsi_df = df[["date", col]].dropna()
+        fig_lsi.add_trace(go.Scatter(
+            x=lsi_df["date"],
+            y=lsi_df[col],
+            mode="lines",
+            fill="tozeroy" if col == "lsi_local" else None,
+            fillcolor="rgba(31,119,180,0.12)",
+            line=dict(color=color, width=2),
+            name=label,
+        ))
     fig_lsi.add_hline(y=70, line_dash="dash", line_color=COLORS["danger"],
                       opacity=0.7, annotation_text="Стресс", annotation_position="right")
     fig_lsi.add_hline(y=40, line_dash="dot", line_color=COLORS["warn"],
@@ -135,7 +186,8 @@ if "lsi" in df.columns:
         height=340,
         yaxis_title="LSI Score",
         hovermode="x unified",
-        margin=dict(l=40, r=60, t=20, b=40),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        margin=dict(l=40, r=60, t=40, b=40),
     )
     st.plotly_chart(fig_lsi, use_container_width=True)
     st.markdown("---")
@@ -215,8 +267,9 @@ st.plotly_chart(fig_flags, use_container_width=True)
 # --- Export ---
 with st.expander("Данные для экспорта"):
     export_cols = ["date"] + avail + ["_proxy_score"]
-    if "lsi" in df.columns:
-        export_cols.append("lsi")
+    for col in ["lsi_local", "lsi_global", "lsi"]:
+        if col in df.columns:
+            export_cols.append(col)
     export_cols = [c for c in export_cols if c in df.columns]
     export_df = df[export_cols].rename(columns={**mad_cols, "_proxy_score": "PROXY_score"})
     st.dataframe(export_df.sort_values("date", ascending=False), use_container_width=True, hide_index=True)
