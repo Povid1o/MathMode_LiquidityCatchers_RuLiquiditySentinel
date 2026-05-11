@@ -8,6 +8,50 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# Убираем лишние отступы сверху и padding sidebar
+st.markdown(
+    """
+    <style>
+    /* Убираем верхний отступ в сайдбаре */
+    [data-testid="stSidebarContent"] {
+        padding-top: 0.5rem !important;
+        overflow-x: hidden;
+    }
+    /* Убираем все горизонтальные разделители в сайдбаре */
+    [data-testid="stSidebarContent"] hr,
+    [data-testid="stSidebarNav"] + div hr,
+    [data-testid="stSidebarContent"] [data-testid="stMarkdownContainer"] hr {
+        display: none;
+    }
+    /* Streamlit nav добавляет border-bottom на обёртку */
+    [data-testid="stSidebarNavSeparator"],
+    [data-testid="stSidebarContent"] > div > div[style*="border"] {
+        display: none !important;
+    }
+    section[data-testid="stSidebar"] > div:first-child {
+        padding-top: 0 !important;
+    }
+    /* Убираем верхний отступ основного контента */
+    .block-container {
+        padding-top: 1.5rem !important;
+    }
+    /* Футер прибит к низу сайдбара */
+    .sidebar-footer {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        width: 21rem;
+        padding: 0.6rem 1.2rem 0.8rem 1.2rem;
+        font-size: 0.75rem;
+        color: #888;
+        border-top: none;
+        background-color: inherit;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 pages_dir = Path(__file__).parent / "pages"
 
 overview = st.Page(str(pages_dir / "01_overview.py"), title="Обзор системы", icon="🏠")
@@ -27,10 +71,12 @@ pg = st.navigation(
 )
 
 with st.sidebar:
-    st.markdown("---")
-    st.caption(
-        "**PSB Case — Liquidity Stress Monitor**  \n"
+    st.markdown(
+        '<div class="sidebar-footer">'
+        "<strong>PSB Case — Liquidity Stress Monitor</strong><br>"
         "LSI в разработке. Данные: ЦБ РФ, Минфин, ФНС."
+        "</div>",
+        unsafe_allow_html=True,
     )
 
 pg.run()
