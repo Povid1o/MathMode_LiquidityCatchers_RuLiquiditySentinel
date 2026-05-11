@@ -4,6 +4,8 @@
 .DS_Store
 
 data/raw/repo/daily/
+data/raw/treasury_funds/roskazna_deposits/
+data/raw/treasury_funds/roskazna_pages/
 
 ### Data ###
 *.dat

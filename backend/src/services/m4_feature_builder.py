@@ -44,6 +44,16 @@ OUTPUT_COLUMNS = [
     "Seasonal_Factor_raw",
 ]
 
+FLOAT_COLUMNS = {
+    "tax_pressure",
+    "tax_pressure_smoothed",
+    "tax_proximity",
+    "MAD_tax_pressure",
+    "MAD_tax_proximity",
+    "Seasonal_Factor",
+    "Seasonal_Factor_raw",
+}
+
 
 def _read_csv(path: Path) -> list[dict[str, str]]:
     """Читает CSV-файл в список словарей"""
@@ -78,6 +88,13 @@ def _to_int(value: str | object) -> int:
 def _clip(value: float, lower: float, upper: float) -> float:
     """Ограничивает значение заданным диапазоном"""
     return min(max(value, lower), upper)
+
+
+def _stable_value(column: str, value: object) -> object:
+    """Приводит значение признака к стабильному виду для CSV и parquet"""
+    if column in FLOAT_COLUMNS and value is not None:
+        return round(float(value), 12)
+    return value
 
 
 def _centered_mean(values: list[float], index: int, half_window: int) -> float:
@@ -239,7 +256,12 @@ def build_m4_features(input_path: Path = INPUT_FILE) -> list[dict[str, object]]:
                 "Seasonal_Factor": seasonal_factors[index],
             }
         )
-        result_rows.append({column: row.get(column) for column in OUTPUT_COLUMNS})
+        result_rows.append(
+            {
+                column: _stable_value(column, row.get(column))
+                for column in OUTPUT_COLUMNS
+            }
+        )
 
     return result_rows
 
