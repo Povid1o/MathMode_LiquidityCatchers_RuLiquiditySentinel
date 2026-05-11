@@ -26,6 +26,9 @@ from backend.src.parsers.roskazna_treasury_deposits import (
 
 from backend.src.services.m5_dataset_builder import build_m5_dataset
 from backend.src.services.m5_dataset_builder import save_csv as save_m5_dataset_csv
+from backend.src.services.m5_feature_builder import build_m5_features
+from backend.src.services.m5_feature_builder import save_csv as save_m5_features_csv
+from backend.src.services.m5_feature_builder import save_parquet as save_m5_features_parquet
 
 
 def run_m5_pipeline() -> None:
@@ -55,11 +58,17 @@ def run_m5_pipeline() -> None:
     m5_rows = build_m5_dataset()
     save_m5_dataset_csv(m5_rows)
 
+    print("Собираем признаки М5")
+    m5_feature_rows = build_m5_features()
+    save_m5_features_csv(m5_feature_rows)
+    save_m5_features_parquet(m5_feature_rows)
+
     print(f"Готово, строк по бюджетным средствам: {len(budget_rows)}")
     print(f"Готово, строк по ликвидности: {len(liquidity_rows)}")
     print(f"Готово, XML-файлов Росказны: {len(roskazna_files)}")
     print(f"Готово, строк по депозитам Росказны: {len(roskazna_rows)}")
     print(f"Готово, строк в датасете М5: {len(m5_rows)}")
+    print(f"Готово, строк в признаках М5: {len(m5_feature_rows)}")
 
 
 def main() -> None:

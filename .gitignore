@@ -8,6 +8,7 @@ data/raw/treasury_funds/roskazna_pages/
 ### Data ###
 *.csv
 !data/processed/roskazna_treasury_deposits.csv
+!data/processed/m5_features.csv
 *.dat
 *.efx
 *.gbr
