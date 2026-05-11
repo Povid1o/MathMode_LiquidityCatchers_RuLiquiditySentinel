@@ -9,6 +9,8 @@ data/raw/treasury_funds/roskazna_pages/
 *.csv
 !data/processed/roskazna_treasury_deposits.csv
 !data/processed/m5_features.csv
+!data/processed/final_ml_dataset.csv
+!data/processed/final_ml_dataset.parquet
 *.dat
 *.efx
 *.gbr
