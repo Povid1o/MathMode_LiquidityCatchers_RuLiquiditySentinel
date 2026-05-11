@@ -18,6 +18,13 @@ from typing import Any
 
 import pandas as pd
 
+# Загружаем .env если есть — не падаем если python-dotenv не установлен
+try:
+    from dotenv import load_dotenv as _load_dotenv
+    _load_dotenv(dotenv_path=Path(__file__).resolve().parents[3] / ".env", override=False)
+except ImportError:
+    pass
+
 from backend.src.services.lsi_thresholds import DEFAULT_THRESHOLD_PROFILE
 from backend.src.services.lsi_thresholds import get_lsi_status
 from backend.src.services.lsi_thresholds import get_threshold_profile
