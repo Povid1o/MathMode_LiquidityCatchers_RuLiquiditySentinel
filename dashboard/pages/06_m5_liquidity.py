@@ -3,11 +3,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import streamlit as st
+import pandas as pd
 import plotly.graph_objects as go
 from dashboard.data.loader import load_m5
 from dashboard.components.charts import line_chart, bar_chart
 from dashboard.components.metrics import latest_value_metric, quick_period_filter, freshness_header, csv_download_button
-from dashboard.config import COLORS, PLOTLY_TEMPLATE
+from dashboard.config import PLOTLY_TEMPLATE
 
 st.set_page_config(page_title="M5 — Ликвидность", layout="wide")
 st.title("M5 — Ликвидность и средства Казначейства")
@@ -65,31 +66,49 @@ st.caption(
     "Данные с лагом 1 торговый день."
 )
 
+# Яркие контрастные цвета для тёмной темы
+_COLOR_SURPLUS = "#22C55E"   # яркий зелёный
+_COLOR_DEFICIT = "#EF4444"   # яркий красный
+_COLOR_CHANGE  = "#F97316"   # оранжевый для линии изменений
+
 liq_col = "liquidity_deficit_surplus_bln_rub_lag_1d"
 liq_df = df.dropna(subset=[liq_col])
 if not liq_df.empty:
+    # Один Bar-трейс с цветом на каждый столбик — нет проблем с overlay
+    bar_colors = [_COLOR_SURPLUS if v >= 0 else _COLOR_DEFICIT for v in liq_df[liq_col]]
     fig_liq = go.Figure()
-    positive = liq_df[liq_df[liq_col] >= 0]
-    negative = liq_df[liq_df[liq_col] < 0]
     fig_liq.add_trace(go.Bar(
-        x=positive["date"], y=positive[liq_col],
-        name="Профицит", marker_color=COLORS["success"],
+        x=liq_df["date"],
+        y=liq_df[liq_col],
+        name="Профицит / Дефицит",
+        marker=dict(
+            color=bar_colors,
+            opacity=1.0,
+            line=dict(width=0),
+        ),
+        showlegend=False,
     ))
-    fig_liq.add_trace(go.Bar(
-        x=negative["date"], y=negative[liq_col],
-        name="Дефицит", marker_color=COLORS["danger"],
+    # Ручные маркеры для легенды
+    fig_liq.add_trace(go.Scatter(
+        x=[None], y=[None], mode="markers",
+        marker=dict(color=_COLOR_SURPLUS, size=10, symbol="square"),
+        name="Профицит",
+    ))
+    fig_liq.add_trace(go.Scatter(
+        x=[None], y=[None], mode="markers",
+        marker=dict(color=_COLOR_DEFICIT, size=10, symbol="square"),
+        name="Дефицит",
     ))
     fig_liq.add_trace(go.Scatter(
         x=liq_df["date"], y=liq_df["liquidity_deficit_surplus_bln_rub_change_5d"],
         name="Изменение за 5д", mode="lines",
-        line=dict(color=COLORS["secondary"]),
+        line=dict(color=_COLOR_CHANGE, width=1.5),
         yaxis="y2",
     ))
     fig_liq.update_layout(
         title="Дефицит/профицит ликвидности банковского сектора (млрд руб.)",
         template=PLOTLY_TEMPLATE,
         height=400,
-        barmode="overlay",
         hovermode="x unified",
         yaxis_title="млрд руб.",
         yaxis2=dict(title="Изменение (5д), млрд руб.", overlaying="y", side="right"),
@@ -142,8 +161,12 @@ with tab2:
 
 st.markdown("---")
 
-# --- Roskazna flows ---
+# --- Roskazna flows (только с 2020-01-01 — данные до этого отсутствуют) ---
 st.subheader("Операции Казначейства (Росказна)")
+st.caption("Данные Росказны доступны с 2021 года; график показывается с 2020-01-01.")
+
+_ROSKAZNA_START = pd.Timestamp("2020-01-01")
+rk_df = df[df["date"] >= _ROSKAZNA_START].copy()
 
 tab_a, tab_b, tab_c = st.tabs(["Чистые потоки (rolling)", "Первые / вторые ноги", "Аукционная активность"])
 
@@ -158,7 +181,7 @@ with tab_a:
         "roskazna_net_flow_rolling_14d_mln_rub": "Net flow 14д",
         "roskazna_net_flow_rolling_30d_mln_rub": "Net flow 30д",
     }
-    roll_df = df.dropna(subset=roll_cols, how="all")
+    roll_df = rk_df.dropna(subset=roll_cols, how="all")
     avail_cols = [c for c in roll_cols if c in roll_df.columns and roll_df[c].notna().any()]
     if avail_cols:
         horizon = st.selectbox(
@@ -184,10 +207,10 @@ with tab_b:
         "roskazna_second_leg_return_volume_mln_rub": "Вторая нога (возврат)",
         "roskazna_net_flow_by_legs_mln_rub": "Чистый поток (ноги)",
     }
-    avail_leg = [c for c in leg_cols if c in df.columns]
+    avail_leg = [c for c in leg_cols if c in rk_df.columns]
     if avail_leg:
         fig_legs = line_chart(
-            df.dropna(subset=avail_leg, how="all"),
+            rk_df.dropna(subset=avail_leg, how="all"),
             x="date", y=avail_leg,
             labels=leg_cols,
             title="Объёмы размещения и возврата Росказны",
@@ -200,8 +223,8 @@ with tab_b:
 
 with tab_c:
     demand_col = "roskazna_demand_volume_mln_rub_lag_1d"
-    auction_df = df[df.get("roskazna_auction_day_flag_lag_1d", df["date"].notna()) == 1].copy() \
-        if "roskazna_auction_day_flag_lag_1d" in df.columns else df.dropna(subset=[demand_col])
+    auction_df = rk_df[rk_df.get("roskazna_auction_day_flag_lag_1d", rk_df["date"].notna()) == 1].copy() \
+        if "roskazna_auction_day_flag_lag_1d" in rk_df.columns else rk_df.dropna(subset=[demand_col])
 
     if not auction_df.empty and demand_col in auction_df.columns:
         fig_demand = bar_chart(
@@ -217,20 +240,6 @@ with tab_c:
 
 st.markdown("---")
 
-# --- Days since last Roskazna auction ---
-days_col = "days_since_last_roskazna_auction"
-if days_col in df.columns:
-    st.subheader("Активность аукционов Росказны")
-    st.caption("Дней с последнего аукциона Росказны.")
-    fig_days = line_chart(
-        df.dropna(subset=[days_col]), x="date", y=[days_col],
-        labels={days_col: "Дней с последнего аукциона"},
-        title="Дней с последнего аукциона Росказны",
-        yaxis_title="Дней",
-        height=260,
-    )
-    st.plotly_chart(fig_days, use_container_width=True)
-
 # --- Raw table ---
 with st.expander("Таблица данных M5"):
     cols_show = [
@@ -241,7 +250,6 @@ with st.expander("Таблица данных M5"):
         "roskazna_net_flow_by_legs_mln_rub",
         "roskazna_net_flow_rolling_7d_mln_rub",
         "roskazna_net_flow_rolling_30d_mln_rub",
-        "days_since_last_roskazna_auction",
     ]
     cols_show = [c for c in cols_show if c in df.columns]
     st.dataframe(df[cols_show].sort_values("date", ascending=False), use_container_width=True, hide_index=True)
