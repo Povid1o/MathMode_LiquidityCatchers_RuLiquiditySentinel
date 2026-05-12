@@ -131,16 +131,26 @@ if lsi_available:
     global_drivers = lsi_response.get("global_top_drivers", [])
 
     def status_value(label: str, status: str) -> None:
+        status_upper = status.upper() if status else ""
+        if "КРАСН" in status_upper:
+            color = "#DC2626"
+        elif "ЖЕЛТ" in status_upper or "ЖЁЛТ" in status_upper:
+            color = "#B45309"
+        elif "ЗЕЛЕН" in status_upper or "ЗЕЛЁН" in status_upper:
+            color = "#059669"
+        else:
+            color = "inherit"
         st.markdown(f"**{label}**")
         st.markdown(
             f"""
             <div style="
                 font-size: clamp(1.25rem, 2.0vw, 2.1rem);
                 line-height: 1.12;
-                color: #fafafa;
+                color: {color};
                 white-space: normal;
                 overflow-wrap: anywhere;
                 padding-top: 0.15rem;
+                font-weight: 600;
             ">
                 {status}
             </div>
