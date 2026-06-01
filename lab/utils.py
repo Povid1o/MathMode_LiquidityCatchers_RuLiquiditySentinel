@@ -840,3 +840,78 @@ def bar_metric_by_module(
     ax.grid(alpha=0.2, axis="y")
     fig.tight_layout()
     return fig, ax
+
+
+# ----------------------------------------------------------------------------
+# Сырые данные по модулям (используется в 00_data_inventory)
+# ----------------------------------------------------------------------------
+# Карта «модуль -> сырой/исходный датасет в data/processed». Это входные данные
+# модулей M1-M5 ДО сборки фич — удобно глазами посмотреть исходные ряды.
+RAW_MODULE_SOURCES: dict[str, str] = {
+    "m1": "m1_dataset.csv",   # резервы банков + RUONIA (по периодам усреднения)
+    "m2": "m2_dataset.csv",   # аукционы РЕПО ЦБ (event-driven, все срочности)
+    "m3": "m3_dataset.csv",   # аукционы ОФЗ Минфина (event-driven)
+    "m4": "m4_dataset.csv",   # налоговый календарь (дневной)
+    "m5": "m5_dataset.csv",   # ликвидность ЦБ + Казначейство (дневной + Roskazna)
+}
+
+
+def load_raw_csv(
+    filename: str,
+    *,
+    date_col: str | None = None,
+    parse_dates: bool = True,
+) -> tuple[pd.DataFrame, str]:
+    """Загружает сырой CSV из data/processed и парсит дату (dayfirst).
+
+    Возвращает (df, date_col). Если date_col не указан — берётся первая колонка,
+    содержащая 'date' (учитывает auction_date / event_date), иначе первая колонка.
+    """
+    path = data_dir() / filename
+    df = pd.read_csv(path)
+    if date_col is None:
+        date_col = next((c for c in df.columns if "date" in c.lower()), df.columns[0])
+    if parse_dates and date_col in df.columns:
+        df[date_col] = pd.to_datetime(df[date_col], dayfirst=True, format="mixed", errors="coerce")
+        df = df.sort_values(date_col).reset_index(drop=True)
+    return df, date_col
+
+
+def plot_raw_timeseries(
+    df: pd.DataFrame,
+    columns: Iterable[str],
+    *,
+    date_col: str = "date",
+    ncols: int = 2,
+    kind: str = "line",
+    title: str | None = None,
+    figsize_per: tuple[float, float] = (6.6, 2.6),
+):
+    """Small-multiples временных рядов сырых колонок (одна фигура на модуль).
+
+    kind: 'line' (по умолчанию) или 'scatter' — для разреженных event-driven рядов
+    (аукционы) часто нагляднее scatter. Нечисловые/отсутствующие колонки пропускаются.
+    """
+    plt = _mpl()
+    cols = [c for c in columns if c in df.columns]
+    if not cols:
+        return None, None
+    x = pd.to_datetime(df[date_col], errors="coerce")
+    nrows = int(np.ceil(len(cols) / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(figsize_per[0] * ncols, figsize_per[1] * nrows))
+    axes = np.atleast_1d(axes).ravel()
+    for ax, c in zip(axes, cols):
+        y = pd.to_numeric(df[c], errors="coerce")
+        if kind == "scatter":
+            ax.scatter(x, y, s=7, alpha=0.5, color="steelblue")
+        else:
+            ax.plot(x, y, lw=0.8, color="steelblue")
+        ax.set_title(c, fontsize=9)
+        ax.grid(alpha=0.2)
+        ax.tick_params(axis="x", labelsize=7)
+    for ax in axes[len(cols):]:
+        ax.axis("off")
+    if title:
+        fig.suptitle(title, fontsize=12, y=1.02)
+    fig.tight_layout()
+    return fig, axes
