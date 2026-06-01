@@ -514,7 +514,82 @@ FEATURE_DESCRIPTIONS: dict[str, str] = {
         "Коэффициент резервной нагрузки (MAD-score). Доля полного норматива обязательных "
         "и учетных резервов относительно фактических остатков банков на корсчетах. "
         "Высокое значение указывает на сильную «связанность» средств и уязвимость расчетов к шокам."
-    )
+    ),
+    # --- M2: REPO-аукционы ЦБ (sparse, event-driven) ---
+    "m2_auction_flag": (
+        "Флаг дня REPO-аукциона ЦБ (бинарный). 1 = в этот день проходил аукцион РЕПО. "
+        "Большинство дней = 0; это маркер события, а не уровня стресса."
+    ),
+    "m2_Flag_Demand": (
+        "Флаг повышенного спроса на REPO-аукционе (бинарный, sparse). "
+        "Отмечает дни, когда спрос банков на рефинансирование был аномально высок."
+    ),
+    "m2_MAD_score_cover": (
+        "MAD-score коэффициента покрытия REPO-аукциона (bid-to-cover). Ненулевой только в дни "
+        "аукционов. Высокое значение = ажиотажный спрос на ликвидность ЦБ (сигнал стресса)."
+    ),
+    "m2_MAD_score_rate_spread": (
+        "MAD-score спреда ставки отсечения над минимальной на REPO-аукционе. Ненулевой в дни "
+        "аукционов. Рост = банки готовы платить дороже за рефинансирование (стресс)."
+    ),
+    # --- M3: ОФЗ-аукционы Минфина (sparse, event-driven) ---
+    "m3_auction_flag": (
+        "Флаг дня аукциона ОФЗ (бинарный). 1 = проходил аукцион размещения ОФЗ. "
+        "Маркер события; нули = отсутствие аукциона, а не отсутствие стресса."
+    ),
+    "m3_cover_stress_score": (
+        "Стресс по спросу на ОФЗ — ИНВЕРСИЯ cover MAD (= -m3_MAD_score_cover). Низкий спрос на "
+        "размещении трактуется как стресс, поэтому знак перевёрнут. Высокое значение = слабый спрос."
+    ),
+    "m3_yield_stress_score": (
+        "Стресс по доходности на аукционе ОФЗ (MAD-score). Высокое значение = Минфин вынужден давать "
+        "премию к доходности, чтобы разместить выпуск (признак напряжения на рынке госдолга)."
+    ),
+    "m3_Flag_Nedospros": (
+        "Флаг «недоспроса» на аукционе ОФЗ (бинарный, sparse). Спрос ниже предложения — слабый рынок."
+    ),
+    "m3_Flag_Perespros": (
+        "Флаг «переспроса» на аукционе ОФЗ (бинарный, очень sparse). Спрос значительно выше "
+        "предложения. В коротком окне может быть почти мёртвым (мало единиц)."
+    ),
+    # --- M4: налоговый календарь (детерминированный, не рыночный) ---
+    "m4_Tax_Week_Flag": (
+        "Флаг налоговой недели (бинарный). 1 = идёт период налоговых выплат. Детерминированный "
+        "календарный контекст, НЕ объём изъятия ликвидности. Может быть очень частым."
+    ),
+    "m4_Tax_Day_Strict": (
+        "Строгий флаг налогового дня (бинарный). 1 = день (±1) ключевого налогового платежа. "
+        "Уже, чем Tax_Week_Flag; календарный, а не рыночный сигнал."
+    ),
+    "m4_MAD_tax_pressure": (
+        "MAD-score налогового давления. Сглаженная интенсивность налоговых событий "
+        "(квартальный/годовой налог на прибыль усилен весами). Календарная конструкция."
+    ),
+    "m4_MAD_tax_proximity": (
+        "MAD-score близости к налоговому дню. Экспоненциальная близость к ближайшему платежу "
+        "(до/после). Непрерывный календарный контекст, повторяется каждый месяц."
+    ),
+    "m4_Seasonal_Factor_raw": (
+        "Сырой сезонный фактор [1.0..1.4]. Мультипликатор по налоговой неделе / концу квартала / "
+        "концу года. Детерминированный, ограниченный сверху; почти не имеет хвостов."
+    ),
+    # --- M5: ликвидность ЦБ и Казначейство (daily structural + Roskazna post-2021) ---
+    "m5_cbr_liquidity_stress_mad_score": (
+        "MAD-score стресса ликвидности банковского сектора (ЦБ). Низкая структурная ликвидность "
+        "трактуется как стресс (stress_when_lower=True). Ключевой дневной структурный признак."
+    ),
+    "m5_cbr_liquidity_drain_mad_score": (
+        "MAD-score оттока (дренажа) ликвидности из сектора. Высокое значение = быстрое сокращение "
+        "ликвидности (изъятие средств), потенциальный стресс."
+    ),
+    "m5_roskazna_net_flow_stress_mad_score": (
+        "MAD-score стресса чистого потока Казначейства (Roskazna). Данные доступны в основном "
+        "ПОСЛЕ 2021 г.; до 2021 ряд преимущественно нулевой/пустой — учитывать при интерпретации."
+    ),
+    "m5_Flag_Budget_Drain": (
+        "Флаг бюджетного изъятия ликвидности (бинарный, sparse). 1 = крупный чистый отток средств "
+        "по бюджетному каналу (порог -300 млрд руб)."
+    ),
 }
 
 
@@ -581,3 +656,187 @@ def savefig(fig, name: str) -> Path:
     path = out / name
     fig.savefig(path, dpi=110, bbox_inches="tight")
     return path
+
+
+# ----------------------------------------------------------------------------
+# Поблочный разбор распределений (используется в 01_feature_distributions)
+# ----------------------------------------------------------------------------
+def summarize_features_extended(data: pd.DataFrame, features: Iterable[str]) -> pd.DataFrame:
+    """Расширенная сводка с перцентилями (p01/p05/p50/p95/p99) по списку фич.
+
+    Колонки: module, feature, null_rate, zero_rate, n_unique, mean, std,
+    min, p01, p05, p50, p95, p99, max. Удобно для поблочного просмотра модуля.
+    """
+    rows = []
+    for f in features:
+        if f not in data.columns:
+            rows.append({"feature": f, "present": False})
+            continue
+        s = pd.to_numeric(data[f], errors="coerce")
+        clean = s.dropna()
+        q = clean.quantile([0.01, 0.05, 0.50, 0.95, 0.99]) if len(clean) else pd.Series()
+        rows.append(
+            {
+                "module": f.split("_", 1)[0],
+                "feature": f,
+                "null_rate": round(float(s.isna().mean()), 4),
+                "zero_rate": round(float((s == 0).mean()), 4),
+                "n_unique": int(s.nunique(dropna=True)),
+                "mean": round(float(s.mean()), 4),
+                "std": round(float(s.std()), 4),
+                "min": round(float(s.min()), 4),
+                "p01": round(float(q.get(0.01, np.nan)), 4),
+                "p05": round(float(q.get(0.05, np.nan)), 4),
+                "p50": round(float(q.get(0.50, np.nan)), 4),
+                "p95": round(float(q.get(0.95, np.nan)), 4),
+                "p99": round(float(q.get(0.99, np.nan)), 4),
+                "max": round(float(s.max()), 4),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def classify_feature_type(data: pd.DataFrame, features: Iterable[str], *, sparse_zero: float = 0.8) -> pd.DataFrame:
+    """Эвристически помечает тип фичи: continuous / binary / sparse_event /
+    calendar / dead_or_constant. Для ручного просмотра, не строгая типизация.
+
+    Правила (по порядку):
+    - dead_or_constant: std ~ 0 или n_unique <= 1
+    - binary: значения подмножество {0,1}
+    - calendar: имя содержит flag/tax/seasonal/day/week (детерминированный календарь)
+    - sparse_event: zero_rate >= sparse_zero (преимущественно нули = событие)
+    - continuous: иначе
+    """
+    calendar_tokens = ("flag", "tax", "seasonal", "_day", "_week", "auction")
+    rows = []
+    for f in features:
+        if f not in data.columns:
+            rows.append({"feature": f, "feature_type": "absent"})
+            continue
+        s = pd.to_numeric(data[f], errors="coerce")
+        clean = s.dropna()
+        std = float(s.std()) if len(clean) else 0.0
+        nuniq = int(s.nunique(dropna=True))
+        zero_rate = float((s == 0).mean())
+        vals = set(np.unique(clean.values)) if len(clean) else set()
+        is_binary = vals.issubset({0.0, 1.0}) and nuniq <= 2
+        name = f.lower()
+        if std < 1e-12 or nuniq <= 1:
+            ftype = "dead_or_constant"
+        elif is_binary:
+            ftype = "binary"
+        elif any(tok in name for tok in calendar_tokens):
+            ftype = "calendar"
+        elif zero_rate >= sparse_zero:
+            ftype = "sparse_event"
+        else:
+            ftype = "continuous"
+        rows.append(
+            {
+                "module": f.split("_", 1)[0],
+                "feature": f,
+                "feature_type": ftype,
+                "zero_rate": round(zero_rate, 4),
+                "n_unique": nuniq,
+                "std": round(std, 4),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def plot_module_small_multiples(
+    data: pd.DataFrame,
+    features: list[str],
+    *,
+    mask: pd.Series | None = None,
+    bins: int = 40,
+    ncols: int = 3,
+    title: str | None = None,
+):
+    """Small-multiples гистограммы для фич одного модуля (одна фигура на модуль).
+
+    mask — опциональный булев фильтр строк (например, только auction days).
+    """
+    plt = _mpl()
+    feats = [f for f in features if f in data.columns]
+    if not feats:
+        return None, None
+    sub = data[mask] if mask is not None else data
+    nrows = int(np.ceil(len(feats) / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(4.2 * ncols, 2.8 * nrows))
+    axes = np.atleast_1d(axes).ravel()
+    for ax, f in zip(axes, feats):
+        s = pd.to_numeric(sub[f], errors="coerce").dropna()
+        ax.hist(s, bins=bins, color="steelblue", alpha=0.85)
+        ax.set_title(f, fontsize=9)
+        ax.grid(alpha=0.2)
+    for ax in axes[len(feats):]:
+        ax.axis("off")
+    if title:
+        fig.suptitle(title, fontsize=12, y=1.02)
+    fig.tight_layout()
+    return fig, axes
+
+
+def plot_nonzero_timeline(
+    data: pd.DataFrame,
+    features: list[str],
+    *,
+    episodes: dict[str, tuple[str, str]] | None = None,
+    title: str = "Non-zero signal timeline",
+    figsize=(13, 0.7),
+):
+    """Таймлайн ненулевых наблюдений по нескольким фичам (для sparse/event модулей).
+
+    Каждая фича — отдельная строка-«дорожка»; точка ставится там, где значение != 0.
+    Полезно увидеть, концентрируются ли события вокруг стресс-периодов.
+    """
+    plt = _mpl()
+    feats = [f for f in features if f in data.columns]
+    if not feats or "date" not in data.columns:
+        return None, None
+    dates = pd.to_datetime(data["date"])
+    fig, ax = plt.subplots(figsize=(figsize[0], max(2.0, figsize[1] * len(feats) + 1)))
+    for i, f in enumerate(feats):
+        s = pd.to_numeric(data[f], errors="coerce").fillna(0)
+        nz = s != 0
+        ax.scatter(dates[nz], np.full(int(nz.sum()), i), s=6, marker="|", color="darkred", alpha=0.6)
+    if episodes:
+        for nm, (a, b) in episodes.items():
+            ax.axvspan(pd.Timestamp(a), pd.Timestamp(b), color="orange", alpha=0.12)
+    ax.set_yticks(range(len(feats)))
+    ax.set_yticklabels(feats, fontsize=8)
+    ax.set_title(title)
+    ax.grid(alpha=0.15, axis="x")
+    fig.tight_layout()
+    return fig, ax
+
+
+def bar_metric_by_module(
+    summary: pd.DataFrame,
+    metric: str,
+    *,
+    title: str | None = None,
+    figsize=(13, 5),
+):
+    """Bar chart значения метрики (например zero_rate или std) по фичам,
+    цвет — по модулю. Ожидает df с колонками feature, module, <metric>.
+    """
+    plt = _mpl()
+    df = summary.dropna(subset=[metric]).copy()
+    df = df.sort_values(["module", metric])
+    modules = sorted(df["module"].unique())
+    cmap = plt.get_cmap("tab10")
+    color_map = {m: cmap(i % 10) for i, m in enumerate(modules)}
+    colors = [color_map[m] for m in df["module"]]
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.bar(range(len(df)), df[metric].values, color=colors)
+    ax.set_xticks(range(len(df)))
+    ax.set_xticklabels(df["feature"], rotation=90, fontsize=7)
+    ax.set_ylabel(metric)
+    ax.set_title(title or f"{metric} by feature (color = module)")
+    handles = [plt.Rectangle((0, 0), 1, 1, color=color_map[m]) for m in modules]
+    ax.legend(handles, modules, title="module", fontsize=8, ncol=len(modules))
+    ax.grid(alpha=0.2, axis="y")
+    fig.tight_layout()
+    return fig, ax

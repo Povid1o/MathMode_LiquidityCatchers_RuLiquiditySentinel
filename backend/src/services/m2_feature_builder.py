@@ -13,7 +13,6 @@ OUTPUT_FILE = PROJECT_ROOT / "data/processed/m2_features.csv"
 PARQUET_FILE = PROJECT_ROOT / "data/processed/m2_features.parquet"
 
 START_DATE = datetime(2010, 1, 1)
-TARGET_TERM_DAYS = 7
 MIN_DEALS_VOLUME = 1000.0
 COVER_RATIO_LIMIT = 10.0
 DEMAND_THRESHOLD = 2.0
@@ -139,7 +138,7 @@ def _add_mad_scores(rows: list[dict[str, object]], source_column: str, output_co
 
 
 def build_m2_features(input_path: Path = INPUT_FILE) -> list[dict[str, object]]:
-    """Собирает feature dataset М2 по требованиям аналитика"""
+    """Собирает feature dataset М2 по всем срочностям репо"""
     rows = _read_csv(input_path)
     prepared_rows: list[dict[str, object]] = []
     last_key_rate: float | None = None
@@ -152,7 +151,7 @@ def build_m2_features(input_path: Path = INPUT_FILE) -> list[dict[str, object]]:
         if key_rate is not None:
             last_key_rate = key_rate
 
-        if row_date < START_DATE or term_days != TARGET_TERM_DAYS:
+        if row_date < START_DATE:
             continue
 
         row: dict[str, object] = {

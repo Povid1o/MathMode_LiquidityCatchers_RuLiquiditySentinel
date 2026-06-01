@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import as_completed
 from datetime import date
 from datetime import datetime
+from datetime import timedelta
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -18,6 +19,7 @@ SOURCE_URL = "https://www.cbr.ru/hd_base/repo/"
 OUTPUT_FILE = PROJECT_ROOT / "data/raw/repo/repo.html"
 DAILY_DIR = PROJECT_ROOT / "data/raw/repo/daily"
 DEFAULT_START_DATE = date(2002, 11, 21)
+DEFAULT_END_LAG_DAYS = 7
 
 
 def _format_query_date(value: date) -> str:
@@ -63,7 +65,7 @@ def download_repo(
 ) -> None:
     """Скачивает HTML-файл ЦБ с итогами аукционов репо"""
     if end_date is None:
-        end_date = date.today()
+        end_date = date.today() - timedelta(days=DEFAULT_END_LAG_DAYS)
 
     download_file(_build_repo_url(start_date, end_date), output_path)
 

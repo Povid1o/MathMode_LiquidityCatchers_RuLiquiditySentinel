@@ -351,70 +351,144 @@ def parse_repo_daily_detail(
     return detail_rows
 
 
-def _detail_key(row: dict[str, object]) -> tuple[object, object, object]:
-    """Создает ключ для связи сводной строки и дневной детализации"""
-    return (
-        row.get("date"),
-        row.get("auction_type"),
-        row.get("term_days"),
-    )
-
-
-def _build_detail_index(
+def _build_detail_lists(
     summary_rows: list[dict[str, object]],
     daily_dir: Path = DAILY_DIR,
-) -> dict[tuple[object, object, object], dict[str, object]]:
-    """Собирает индекс дневных деталей по дате, типу и сроку"""
-    details: dict[tuple[object, object, object], dict[str, object]] = {}
-    parsed_dates: set[object] = set()
+) -> dict[object, list[dict[str, object]]]:
+    """Собирает дневные детали как СПИСОК аукционов на каждую дату.
 
-    for summary_row in summary_rows:
-        row_date = summary_row["date"]
-        if row_date in parsed_dates:
-            continue
-        parsed_dates.add(row_date)
-
+    В отличие от старой версии (dict по ключу date+type+term, который терял
+    несколько аукционов одной срочности в один день), здесь для каждой даты
+    хранится полный список деталей — по одному элементу на аукцион (на срочность).
+    """
+    details: dict[object, list[dict[str, object]]] = {}
+    for row_date in {row["date"] for row in summary_rows}:
         daily_path = _daily_path_for_date(row_date, daily_dir)
         if not daily_path.exists():
             continue
-
-        for detail_row in parse_repo_daily_detail(daily_path, str(row_date)):
-            details[_detail_key(detail_row)] = detail_row
-
+        parsed = parse_repo_daily_detail(daily_path, str(row_date))
+        if parsed:
+            details[row_date] = parsed
     return details
 
 
-def _merge_summary_with_detail(
-    summary_row: dict[str, object],
+def _row_from_parts(
+    summary_row: dict[str, object] | None,
     detail_row: dict[str, object] | None,
 ) -> dict[str, object]:
-    """Объединяет сводную строку с дневной детализацией"""
-    result = {column: None for column in OUTPUT_COLUMNS}
-    result.update(summary_row)
+    """Строит итоговую строку: summary даёт время/код, detail — спрос/ставки/срочность.
 
+    detail авторитетен по числовым полям (demand_volume, cutoff_rate, объёмы,
+    ставки, срочность, ноги сделки); summary добавляет auction_time, settlement_code
+    и служит fallback'ом, когда дневной детали нет (старые годы без карточки).
+    """
+    result = {column: None for column in OUTPUT_COLUMNS}
+    if summary_row is not None:
+        for field_name, value in summary_row.items():
+            if field_name in result:
+                result[field_name] = value
     if detail_row is not None:
         for field_name, value in detail_row.items():
-            if field_name in {"date"}:
+            if field_name == "date" or field_name not in result:
                 continue
             if value is not None and value != "":
                 result[field_name] = value
-
     result["cover_ratio"] = _calculate_cover_ratio(result)
     return result
+
+
+def _volumes_match(left: object, right: object, *, rel_tol: float = 1e-3) -> bool:
+    """Сравнивает объёмы сделок с допуском (детали и сводка должны совпадать)."""
+    if not isinstance(left, (int, float)) or not isinstance(right, (int, float)):
+        return False
+    scale = max(abs(left), abs(right), 1.0)
+    return abs(left - right) <= rel_tol * scale
+
+
+def _match_date_auctions(
+    summary_rows: list[dict[str, object]],
+    detail_rows: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    """Сопоставляет сводные и детальные аукционы одной даты, не теряя срочности.
+
+    Двухпроходный матчинг (важно для дней с несколькими сессиями одной срочности,
+    где часть сессий прошла с нулевым объёмом):
+      1) точный матч по срочности И объёму заключённых сделок — деталь ложится на ту
+         сессию, у которой реально были сделки;
+      2) остаток — по срочности в порядке следования.
+    Несопоставленные детали добавляются отдельными строками, несопоставленные
+    сводные — как summary-only (demand/cutoff = None). Так мы не дублируем спрос на
+    пустые сессии (как делал старый парсер) и не теряем ни одной срочности.
+    """
+    if not detail_rows:
+        return [_row_from_parts(summary_row, None) for summary_row in summary_rows]
+
+    used = [False] * len(detail_rows)
+    pairing: dict[int, int] = {}  # summary_index -> detail_index
+
+    # проход 1: срочность + объём сделок
+    for s_index, summary_row in enumerate(summary_rows):
+        term = summary_row.get("term_days")
+        total = summary_row.get("total_deals_volume")
+        match_index = next(
+            (i for i, detail in enumerate(detail_rows)
+             if not used[i] and detail.get("term_days") == term
+             and _volumes_match(total, detail.get("total_deals_volume"))),
+            None,
+        )
+        if match_index is not None:
+            used[match_index] = True
+            pairing[s_index] = match_index
+
+    # проход 2: остаток по срочности (по порядку)
+    for s_index, summary_row in enumerate(summary_rows):
+        if s_index in pairing:
+            continue
+        term = summary_row.get("term_days")
+        match_index = next(
+            (i for i, detail in enumerate(detail_rows)
+             if not used[i] and detail.get("term_days") == term),
+            None,
+        )
+        if match_index is not None:
+            used[match_index] = True
+            pairing[s_index] = match_index
+
+    merged: list[dict[str, object]] = []
+    for s_index, summary_row in enumerate(summary_rows):
+        detail = detail_rows[pairing[s_index]] if s_index in pairing else None
+        merged.append(_row_from_parts(summary_row, detail))
+
+    # детали, не попавшие ни в одну сводную строку — не теряем
+    for i, detail in enumerate(detail_rows):
+        if not used[i]:
+            merged.append(_row_from_parts(None, detail))
+
+    return merged
 
 
 def parse_repo(
     input_path: Path = RAW_FILE,
     daily_dir: Path = DAILY_DIR,
 ) -> list[dict[str, object]]:
-    """Парсит итоги аукционов репо и добавляет дневную детализацию"""
-    summary_rows = parse_repo_summary(input_path)
-    detail_index = _build_detail_index(summary_rows, daily_dir)
+    """Парсит итоги аукционов репо по ВСЕМ срочностям с дневной детализацией.
 
-    parsed_rows = [
-        _merge_summary_with_detail(summary_row, detail_index.get(_detail_key(summary_row)))
-        for summary_row in summary_rows
-    ]
+    Detail-driven: основной источник спроса/ставок — дневные карточки (по одной на
+    срочность), сводная таблица даёт индекс аукционов, время и код расчёта, а также
+    fallback для старых дат без детальной карточки.
+    """
+    summary_rows = parse_repo_summary(input_path)
+    detail_lists = _build_detail_lists(summary_rows, daily_dir)
+
+    summary_by_date: dict[object, list[dict[str, object]]] = {}
+    for summary_row in summary_rows:
+        summary_by_date.setdefault(summary_row["date"], []).append(summary_row)
+
+    parsed_rows: list[dict[str, object]] = []
+    for row_date, date_summaries in summary_by_date.items():
+        parsed_rows.extend(
+            _match_date_auctions(date_summaries, detail_lists.get(row_date, []))
+        )
 
     return sorted(
         parsed_rows,
