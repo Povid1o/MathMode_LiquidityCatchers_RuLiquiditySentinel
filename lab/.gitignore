@@ -1,0 +1,9 @@
+# Heavy / generated artifacts — keep the lab clean in git
+outputs/*
+!outputs/.gitkeep
+
+# Notebook execution cruft
+.ipynb_checkpoints/
+**/.ipynb_checkpoints/
+__pycache__/
+*.pyc
