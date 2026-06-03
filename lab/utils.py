@@ -915,3 +915,22 @@ def plot_raw_timeseries(
         fig.suptitle(title, fontsize=12, y=1.02)
     fig.tight_layout()
     return fig, axes
+
+
+# ----------------------------------------------------------------------------
+# M2 term-aware артефакты (Phase A) — для 08_m2_term_structure
+# ----------------------------------------------------------------------------
+def load_m2_features() -> pd.DataFrame:
+    """Per-auction M2 features (с tier и tier-MAD). Дата -> datetime."""
+    p = data_dir() / "m2_features.parquet"
+    df = pd.read_parquet(p) if p.exists() else pd.read_csv(data_dir() / "m2_features.csv")
+    df["date"] = pd.to_datetime(df["date"], dayfirst=True, format="mixed", errors="coerce")
+    return df.sort_values("date").reset_index(drop=True)
+
+
+def load_m2_daily_profile() -> pd.DataFrame:
+    """Дневной term-профиль M2 (m2_daily_profile). Дата -> datetime."""
+    p = data_dir() / "m2_daily_profile.parquet"
+    df = pd.read_parquet(p) if p.exists() else pd.read_csv(data_dir() / "m2_daily_profile.csv")
+    df["date"] = pd.to_datetime(df["date"], dayfirst=True, format="mixed", errors="coerce")
+    return df.sort_values("date").reset_index(drop=True)
