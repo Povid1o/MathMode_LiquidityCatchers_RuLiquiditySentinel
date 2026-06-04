@@ -152,12 +152,28 @@ def fit_lsi_artifact(
     *,
     kind: str,
     window_days: int | None = None,
+    feature_list: list[str] | None = None,
 ) -> tuple[dict[str, Any], pd.DataFrame]:
-    """Обучает LSI artifact и возвращает scores на обучающем окне"""
+    """Обучает LSI artifact и возвращает scores на обучающем окне.
+
+    feature_list — явный набор признаков (kind-aware whitelist для honest-моделей).
+    Если None — используется production-whitelist через select_lsi_features (старое
+    поведение, обратная совместимость).
+    """
     if data.empty:
         raise ValueError("Нельзя обучить LSI на пустом датасете")
 
-    features_list = select_lsi_features(data)
+    if feature_list is None:
+        features_list = select_lsi_features(data)
+    else:
+        numeric_features = set(data.select_dtypes(include=[np.number]).columns)
+        features_list = [c for c in feature_list if c in numeric_features]
+        if len(features_list) < MIN_LSI_FEATURES:
+            raise ValueError(
+                "Недостаточно признаков для LSI: "
+                f"{len(features_list)} из {len(feature_list)}. "
+                f"Отсутствуют: {[c for c in feature_list if c not in data.columns][:10]}"
+            )
     feature_matrix = data[features_list].astype(float).fillna(0)
 
     n_components = min(PCA_COMPONENTS, len(features_list), len(feature_matrix))

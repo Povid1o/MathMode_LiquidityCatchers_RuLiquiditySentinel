@@ -41,6 +41,22 @@ LSI_THRESHOLD_PROFILES: dict[str, dict[str, object]] = {
         "dec2014_yellow_days": 23,
         "feb2022_red_days": 41,
     },
+    "honest": {
+        "green_max": 40.0,
+        "yellow_max": 60.0,
+        "description": (
+            "Phase B honest LSI (percentile-anchored на honest Global). "
+            "Зелёный < 40 (≈p80), жёлтый 40–60, красный ≥ 60 (≈p95). "
+            "Распределение времени: GREEN ~80%, YELLOW ~15%, RED ~5%. "
+            "Эпизоды на honest-шкале: Фев-мар 2022 — RED (острый кризис: пауза ОФЗ + "
+            "рост кредитования ЦБ); Дек 2014 и Авг 2023 — YELLOW (многоканальный индекс "
+            "оценивает их умереннее, т.к. в Дек 2014 нет данных ОФЗ). "
+            "Пороги перекалиброваны под новый сбалансированный индекс (M1≈23, M2≈26, "
+            "M3≈30, M5≈20, M4 — overlay вне PCA)."
+        ),
+        "global_pctl_yellow": 80,
+        "global_pctl_red": 95,
+    },
     "conservative": {
         "green_max": 40.0,
         "yellow_max": 70.0,
