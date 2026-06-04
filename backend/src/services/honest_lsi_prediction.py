@@ -23,7 +23,7 @@ from backend.src.services.honest_lsi_training import (
     HONEST_LOCAL_MODEL,
     load_honest_dataset,
 )
-from backend.src.services.lsi_thresholds import get_lsi_status
+from backend.src.services.lsi_thresholds import get_lsi_status, get_threshold_profile
 
 DEFAULT_HONEST_PROFILE = "honest"
 _MOD_NAMES = {"M1": "резервы/RUONIA", "M2": "РЕПО-аукционы", "M3": "ОФЗ-аукционы", "M5": "ликвидность ЦБ/ЕКС"}
@@ -143,6 +143,132 @@ def get_honest_lsi_prediction(
         "tax_overlay": tax_overlay(row),
         "threshold_profile": profile,
     }
+
+
+# ---------------------------------------------------------------------------
+# Dashboard-контракт: honest-аналоги production add_lsi_scores / get_lsi_prediction.
+# Возвращают РОВНО ту же структуру (колонки df, поля ответа), что ждёт dashboard:
+#   df: lsi, lsi_local, lsi_global, LSI_Index, LSI_Local, LSI_Global, *_status, date
+#   ответ: *_top_drivers — СПИСОК СТРОК (имена фич), *_module_contributions — dict M1..M5.
+# ---------------------------------------------------------------------------
+
+def _driver_strings(scored: dict[str, Any], idx: int, top_n: int = 3) -> list[str]:
+    """Топ-драйверы как список строк-имён фич (контракт dashboard: ', '.join(...))."""
+    return [d["feature"] for d in honest_drivers(scored, idx, top_n=top_n)]
+
+
+def honest_add_lsi_scores(
+    data: pd.DataFrame | None = None,
+    *,
+    profile: str = DEFAULT_HONEST_PROFILE,
+) -> pd.DataFrame:
+    """Honest-аналог add_lsi_scores: добавляет honest Global/Local LSI-колонки.
+
+    Local скорится ТОЛЬКО на своём окне (date >= train_start), как в production
+    (EMA считается по окну, не по всей истории). LSI_Index = Local ⊕ Global.
+    """
+    if data is None:
+        data = load_honest_dataset()
+    g_art, l_art = load_honest_models()
+
+    result = data.copy()
+    result["date"] = pd.to_datetime(result["date"])
+    result = result.sort_values("date").reset_index(drop=True)
+
+    # --- Global: вся история ---
+    g = score_honest(result, g_art)
+    result["LSI_Global"] = np.round(g["lsi"], 2)
+    result["lsi_global"] = result["LSI_Global"]
+    result["lsi_global_status"] = [get_lsi_status(float(v), profile=profile) for v in result["LSI_Global"]]
+
+    # --- Local: только окно train_start.. (EMA по окну) ---
+    train_start = pd.Timestamp(l_art["train_start"])
+    local_slice = result[result["date"] >= train_start].copy()
+    result["LSI_Local"] = np.nan
+    result["lsi_local"] = np.nan
+    result["lsi_local_status"] = pd.Series([None] * len(result), dtype=object)
+    if not local_slice.empty:
+        lo = score_honest(local_slice, l_art)
+        local_vals = np.round(lo["lsi"], 2)
+        result.loc[local_slice.index, "LSI_Local"] = local_vals
+        result.loc[local_slice.index, "lsi_local"] = local_vals
+        result.loc[local_slice.index, "lsi_local_status"] = [
+            get_lsi_status(float(v), profile=profile) for v in local_vals
+        ]
+
+    # --- Сводный LSI_Index (Local ⊕ Global) ---
+    result["LSI_Index"] = result["LSI_Local"].combine_first(result["LSI_Global"])
+    result["lsi"] = result["lsi_local"].combine_first(result["lsi_global"])
+    result["lsi_status"] = result["lsi_local_status"].combine_first(result["lsi_global_status"])
+    return result
+
+
+def get_honest_lsi_response(
+    data: pd.DataFrame | None = None,
+    *,
+    threshold_profile: str = DEFAULT_HONEST_PROFILE,
+) -> dict[str, Any]:
+    """Honest-аналог get_lsi_prediction: ответ для dashboard на последнюю дату.
+
+    Полностью совместим с контрактом 01_overview.py:
+    - *_top_drivers — список строк (имена фич);
+    - *_module_contributions — dict {M1,M2,M3,M5};
+    - threshold_* поля и *_status по выбранному профилю.
+    """
+    if data is None:
+        data = load_honest_dataset()
+    g_art, l_art = load_honest_models()
+
+    data = data.copy()
+    data["date"] = pd.to_datetime(data["date"])
+    data = data.sort_values("date").reset_index(drop=True)
+
+    g = score_honest(data, g_art)
+    idx = len(data) - 1
+    row = data.iloc[idx]
+    cfg = get_threshold_profile(threshold_profile)
+
+    global_val = float(g["lsi"][idx])
+    global_drivers = _driver_strings(g, idx)
+    global_contribs = honest_module_contributions(g, idx)
+
+    # Local — только если дата в окне модели
+    train_start = pd.Timestamp(l_art["train_start"])
+    local_ok = train_start <= pd.to_datetime(row["date"])
+    local_slice = data[data["date"] >= train_start].copy().reset_index(drop=True)
+    local_val = local_status = local_drivers = local_contribs = None
+    if local_ok and not local_slice.empty:
+        lo = score_honest(local_slice, l_art)
+        lidx = len(local_slice) - 1
+        local_val = float(lo["lsi"][lidx])
+        local_status = get_lsi_status(local_val, profile=threshold_profile)
+        local_drivers = _driver_strings(lo, lidx)
+        local_contribs = honest_module_contributions(lo, lidx)
+
+    index_val = local_val if local_ok and local_val is not None else global_val
+    index_drivers = local_drivers if local_drivers is not None else global_drivers
+
+    response: dict[str, Any] = {
+        "date": str(pd.to_datetime(row["date"]).date()),
+        "LSI_Index": round(index_val, 2),
+        "status": get_lsi_status(index_val, profile=threshold_profile),
+        "top_drivers": index_drivers,
+        "threshold_profile": threshold_profile,
+        "threshold_green_max": float(cfg["green_max"]),
+        "threshold_yellow_max": float(cfg["yellow_max"]),
+        "threshold_description": str(cfg["description"]),
+        "LSI_Global": round(global_val, 2),
+        "global_status": get_lsi_status(global_val, profile=threshold_profile),
+        "global_top_drivers": global_drivers,
+        "global_module_contributions": global_contribs,
+        "tax_overlay": tax_overlay(row),
+    }
+    if local_val is not None:
+        response["LSI_Local"] = round(local_val, 2)
+        response["local_status"] = local_status
+        response["local_top_drivers"] = local_drivers
+        response["local_module_contributions"] = local_contribs
+    return response
 
 
 def main() -> None:

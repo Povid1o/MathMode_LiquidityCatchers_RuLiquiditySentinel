@@ -11,7 +11,8 @@ from dashboard.data.loader import (
 )
 from dashboard.components.metrics import module_status_row
 from dashboard.config import COLORS, MODULE_LABELS, PLOTLY_TEMPLATE
-from backend.src.services.lsi_thresholds import DEFAULT_THRESHOLD_PROFILE, LSI_THRESHOLD_PROFILES
+from backend.src.services.lsi_thresholds import LSI_THRESHOLD_PROFILES
+from backend.src.services.honest_lsi_prediction import DEFAULT_HONEST_PROFILE as DEFAULT_THRESHOLD_PROFILE
 
 st.set_page_config(page_title="Обзор системы", layout="wide")
 
@@ -82,13 +83,14 @@ if lsi_available:
     # и используется на всех страницах dashboard через session_state.
     # ---------------------------------------------------------------
     _profile_labels: dict[str, str] = {
-        "backtest_sensitive": "backtest_sensitive (30/60) — выше чувствительность к стрессу",
-        "conservative":       "conservative (40/70) — меньше ложных тревог",
+        "honest":       "honest (40/60) — сбалансированный индекс, перекалиброванные пороги (p80/p95)",
+        "conservative": "conservative (40/70) — меньше ложных тревог",
     }
     _profile_options = list(_profile_labels.keys())
 
-    # Инициализируем session_state значением по умолчанию из backend
-    if "lsi_threshold_profile" not in st.session_state:
+    # Инициализируем session_state значением по умолчанию из backend.
+    # Если в сессии остался профиль старого индекса — сбрасываем на honest.
+    if st.session_state.get("lsi_threshold_profile") not in _profile_options:
         st.session_state["lsi_threshold_profile"] = DEFAULT_THRESHOLD_PROFILE
 
     selected_profile: str = st.radio(

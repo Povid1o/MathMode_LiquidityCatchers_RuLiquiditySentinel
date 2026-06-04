@@ -9,12 +9,16 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 THRESHOLD_METRICS_FILE = PROJECT_ROOT / "data" / "processed" / "lsi_threshold_metrics.csv"
 
-from backend.src.services.lsi_prediction_service import add_lsi_scores
-from backend.src.services.lsi_prediction_service import get_lsi_prediction
-from backend.src.services.lsi_thresholds import DEFAULT_THRESHOLD_PROFILE
 from backend.src.services.lsi_thresholds import get_threshold_profile
-from backend.src.services.lsi_training_service import GLOBAL_MODEL_FILE
-from backend.src.services.lsi_training_service import LOCAL_MODEL_FILE
+# --- Phase B: honest LSI (новый сбалансированный индекс M1≈23/M2≈26/M3≈30/M5≈20, M4 — overlay) ---
+from backend.src.services.honest_lsi_prediction import DEFAULT_HONEST_PROFILE
+from backend.src.services.honest_lsi_prediction import get_honest_lsi_response
+from backend.src.services.honest_lsi_prediction import honest_add_lsi_scores
+from backend.src.services.honest_lsi_training import HONEST_GLOBAL_MODEL
+from backend.src.services.honest_lsi_training import HONEST_LOCAL_MODEL
+from backend.src.services.honest_lsi_training import load_honest_dataset
+
+DEFAULT_THRESHOLD_PROFILE = DEFAULT_HONEST_PROFILE
 
 
 def _parse_dates(df: pd.DataFrame, col: str = "date") -> pd.DataFrame:
@@ -77,24 +81,29 @@ def load_final() -> pd.DataFrame:
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_lsi() -> pd.DataFrame:
-    """Загружает финальный датасет и добавляет LSI"""
-    final = load_final()
+    """Загружает honest_ml_dataset и добавляет honest LSI (Global/Local).
 
-    if not GLOBAL_MODEL_FILE.exists() and not LOCAL_MODEL_FILE.exists():
-        return final
+    Phase B: индекс собран на сбалансированном whitelist стресс-признаков
+    (M1/M2/M3/M5; M4 — налоговый overlay вне PCA). Возвращает колонки
+    lsi / lsi_local / lsi_global / LSI_Index / LSI_Local / LSI_Global, как ждёт dashboard.
+    """
+    data = load_honest_dataset()
 
-    return add_lsi_scores(final)
+    if not HONEST_GLOBAL_MODEL.exists() and not HONEST_LOCAL_MODEL.exists():
+        return data
+
+    return honest_add_lsi_scores(data)
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_lsi_response(threshold_profile: str = DEFAULT_THRESHOLD_PROFILE) -> dict[str, object]:
-    """Возвращает последний LSI-ответ для заданного порогового профиля.
+    """Возвращает последний honest-LSI-ответ для заданного порогового профиля.
 
     Числовые LSI-значения не пересчитываются — меняются только статусы (ЗЕЛЕНЫЙ/ЖЕЛТЫЙ/КРАСНЫЙ).
     Кеш учитывает threshold_profile: каждый профиль кешируется отдельно.
     """
-    final = load_final()
-    return get_lsi_prediction(final, threshold_profile=threshold_profile)
+    data = load_honest_dataset()
+    return get_honest_lsi_response(data, threshold_profile=threshold_profile)
 
 
 def load_threshold_profile(profile: str = DEFAULT_THRESHOLD_PROFILE) -> dict[str, object]:

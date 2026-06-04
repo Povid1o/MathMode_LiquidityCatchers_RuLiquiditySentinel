@@ -6,7 +6,7 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 from dashboard.data.loader import load_final, load_lsi, load_threshold_profile
-from backend.src.services.lsi_thresholds import DEFAULT_THRESHOLD_PROFILE
+from backend.src.services.honest_lsi_prediction import DEFAULT_HONEST_PROFILE as DEFAULT_THRESHOLD_PROFILE
 from dashboard.components.metrics import proxy_score_note, quick_period_filter, csv_download_button, freshness_header
 from dashboard.config import COLORS, PLOTLY_TEMPLATE, MAD_STRESS_THRESHOLD
 
