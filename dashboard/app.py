@@ -62,13 +62,14 @@ m3 = st.Page(str(pages_dir / "04_m3_ofz.py"), title="M3 — ОФЗ", icon="📜"
 m4 = st.Page(str(pages_dir / "05_m4_tax.py"), title="M4 — Налоги", icon="📅")
 m5 = st.Page(str(pages_dir / "06_m5_liquidity.py"), title="M5 — Ликвидность", icon="💧")
 quality = st.Page(str(pages_dir / "07_data_quality.py"), title="Качество данных", icon="🔍")
+data_update = st.Page(str(pages_dir / "09_data_update.py"), title="Данные", icon="⚙️")
 analyst = st.Page(str(pages_dir / "08_analyst.py"), title="Аналитик", icon="🧠")
 
 pg = st.navigation(
     {
         "Главная": [overview, signals],
         "Модули": [m1, m2, m3, m4, m5],
-        "Инструменты": [quality],
+        "Инструменты": [quality, data_update],
         "Аналитика": [analyst],
     }
 )

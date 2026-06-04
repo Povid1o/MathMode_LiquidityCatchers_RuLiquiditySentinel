@@ -203,6 +203,62 @@ def honest_add_lsi_scores(
     return result
 
 
+def honest_module_feature_contributions(
+    data: pd.DataFrame | None = None,
+    *,
+    module: str,
+    prefer: str = "local",
+    date=None,
+) -> dict[str, Any]:
+    """Live-вклад каждой honest-фичи модуля в текущий LSI (EVR-attribution).
+
+    Возвращает для модуля (M1/M2/M3/M5) список фич с долей вклада в индекс на
+    последнюю дату (или date), z-скор и направление. Для M4 список пуст —
+    модуль overlay вне PCA. `kind` показывает, на какой модели посчитано
+    (local на своём окне, иначе global).
+    """
+    module = module.upper()
+    if data is None:
+        data = load_honest_dataset()
+    g_art, l_art = load_honest_models()
+    data = data.copy()
+    data["date"] = pd.to_datetime(data["date"])
+    data = data.sort_values("date").reset_index(drop=True)
+
+    use_local = prefer == "local"
+    src = data
+    if use_local:
+        train_start = pd.Timestamp(l_art["train_start"])
+        src = data[data["date"] >= train_start].reset_index(drop=True)
+        if src.empty:
+            use_local = False
+            src = data
+    artifact = l_art if use_local else g_art
+    scored = score_honest(src, artifact)
+    idx = len(src) - 1 if date is None else _row_index(src, date)
+
+    feats = scored["features"]
+    scaled = scored["scaled_matrix"][idx]
+    sw = _structural_weights(scored["pca"])
+    contrib = np.abs(scaled) * sw
+    pct = contrib / contrib.sum() * 100
+
+    rows = [
+        {"feature": feats[j], "contrib_pct": round(float(pct[j]), 2),
+         "z_scaled": round(float(scaled[j]), 2),
+         "direction": "выше нормы" if scaled[j] > 0 else "ниже нормы"}
+        for j, f in enumerate(feats) if f[:2].upper() == module
+    ]
+    rows.sort(key=lambda r: r["contrib_pct"], reverse=True)
+    return {
+        "module": module,
+        "kind": "local" if use_local else "global",
+        "date": str(pd.to_datetime(src.iloc[idx]["date"]).date()),
+        "module_total_pct": round(sum(r["contrib_pct"] for r in rows), 1),
+        "features": rows,
+    }
+
+
 def get_honest_lsi_response(
     data: pd.DataFrame | None = None,
     *,

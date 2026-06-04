@@ -2,255 +2,94 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-from dashboard.data.loader import load_m5
-from dashboard.components.charts import line_chart, bar_chart
-from dashboard.components.metrics import latest_value_metric, quick_period_filter, freshness_header, csv_download_button
-from dashboard.config import PLOTLY_TEMPLATE
+import streamlit as st
+from dashboard.data.loader import load_m5, load_honest, load_module_contribution
+from dashboard.components.charts import line_chart
+from dashboard.components.honest import honest_driver_panel
+from dashboard.components.metrics import (
+    latest_value_metric, quick_period_filter, freshness_header, csv_download_button,
+)
+from dashboard.config import COLORS, PLOTLY_TEMPLATE
 
 st.set_page_config(page_title="M5 — Ликвидность", layout="wide")
-st.title("M5 — Ликвидность и средства Казначейства")
+st.title("M5 — Ликвидность и операции ЦБ / Казначейства")
 
 st.markdown(
-    "Модуль охватывает структурную позицию ликвидности банковского сектора, "
-    "бюджетные средства в банках и операции Казначейства (Росказна). "
-    "Данные **ежедневные**, ряд показателей — с лагом 1 день."
+    "Модуль охватывает баланс операций ЦБ с банками и средства Казначейства. В **honest-LSI** "
+    "входят: **требования ЦБ** к банкам (`m5x_claims`), **обязательства ЦБ** (`m5x_liab`), "
+    "постоянное РЕПО (`m5x_repostd`), обеспеченные кредиты (`m5x_secured`) — Global; "
+    "и число заявителей Росказна (`m5x_rk_bidders`) — только Local. Рост требований ЦБ = "
+    "банки активнее занимают у регулятора (классический признак дефицита ликвидности)."
 )
 
-with st.spinner("Загрузка данных M5..."):
-    df = load_m5()
+df_native = load_m5()
+df_honest = load_honest()
 
-freshness_header(df, "M5 — Ликвидность")
-df = quick_period_filter(df, key="m5_period")
+freshness_header(df_native, "M5 — Ликвидность")
 
-if df.empty:
+df_h = quick_period_filter(df_honest, key="m5_period")
+if df_h.empty:
     st.warning("Нет данных для выбранного периода.")
     st.stop()
+cutoff = df_h["date"].min()
+df_n = df_native[df_native["date"] >= cutoff].copy()
 
 # --- KPI ---
 st.subheader("Последние значения")
 c1, c2, c3, c4 = st.columns(4)
 with c1:
-    latest_value_metric(
-        "Дефицит/профицит (млрд руб.)",
-        df["liquidity_deficit_surplus_bln_rub_lag_1d"],
-        fmt="{:.1f}",
-    )
+    latest_value_metric("Требования ЦБ к банкам", df_h["m5x_claims"], fmt="{:,.0f}")
 with c2:
-    latest_value_metric(
-        "Бюджетные средства, всего (млн руб.)",
-        df["budget_funds_total_mln_rub_lagged"],
-        fmt="{:,.0f}",
-    )
+    latest_value_metric("Обязательства ЦБ", df_h["m5x_liab"], fmt="{:,.0f}")
 with c3:
-    latest_value_metric(
-        "Чистый поток Росказны, 7д (млн руб.)",
-        df["roskazna_net_flow_rolling_7d_mln_rub"],
-        fmt="{:,.0f}",
-    )
+    latest_value_metric("Постоянное РЕПО", df_h["m5x_repostd"], fmt="{:,.0f}")
 with c4:
-    latest_value_metric(
-        "Доля руб. бюдж. средств",
-        df["budget_funds_rub_share_lagged"],
-        fmt="{:.1%}",
-    )
+    latest_value_metric("Заявители Росказна (Local)", df_h["m5x_rk_bidders"], fmt="{:.0f}")
 
+# --- Live-вклад honest-фич в LSI ---
 st.markdown("---")
+st.subheader("Вклад M5 в текущий LSI")
+honest_driver_panel(load_module_contribution("M5"), color=COLORS["primary"])
 
-# --- Liquidity deficit/surplus ---
-st.subheader("Структурная позиция ликвидности")
-st.caption(
-    "Положительные значения — профицит ликвидности, отрицательные — дефицит. "
-    "Данные с лагом 1 торговый день."
-)
+# --- Honest-драйверы (daily) ---
+st.markdown("---")
+st.subheader("Honest-признаки M5 (дневная шкала, вход в LSI)")
+t1, t2, t3 = st.tabs(["Требования / обязательства ЦБ", "Standing facilities", "Заявители Росказна (Local)"])
+with t1:
+    st.plotly_chart(line_chart(df_h, x="date", y=["m5x_claims", "m5x_liab"], labels={"m5x_claims": "Требования ЦБ к банкам", "m5x_liab": "Обязательства ЦБ перед банками"}, title="Баланс операций ЦБ с банками", yaxis_title="млн руб.", height=340), use_container_width=True)
+with t2:
+    st.plotly_chart(line_chart(df_h, x="date", y=["m5x_repostd", "m5x_secured"], labels={"m5x_repostd": "Постоянное РЕПО", "m5x_secured": "Обеспеченные кредиты"}, title="Постоянные механизмы рефинансирования (standing)", yaxis_title="млн руб.", height=320), use_container_width=True)
+with t3:
+    rk = df_h.dropna(subset=["m5x_rk_bidders"])
+    rk = rk[rk["m5x_rk_bidders"] > 0] if not rk.empty else rk
+    if not rk.empty:
+        st.plotly_chart(line_chart(rk, x="date", y=["m5x_rk_bidders"], labels={"m5x_rk_bidders": "Число заявителей Росказна"}, title="Активность заявителей на аукционах Росказны", yaxis_title="заявители", height=300), use_container_width=True)
+    else:
+        st.info("Данные по заявителям Росказны отсутствуют в окне (признак только для Local-модели).")
 
-# Яркие контрастные цвета для тёмной темы
-_COLOR_SURPLUS = "#22C55E"   # яркий зелёный
-_COLOR_DEFICIT = "#EF4444"   # яркий красный
-_COLOR_CHANGE  = "#F97316"   # оранжевый для линии изменений
-
+# --- Сырой контекст ---
+st.markdown("---")
+st.subheader("Сырой контекст: структурная позиция ликвидности")
+st.caption("Положительные значения — профицит, отрицательные — дефицит (лаг 1 торговый день).")
 liq_col = "liquidity_deficit_surplus_bln_rub_lag_1d"
-liq_df = df.dropna(subset=[liq_col])
+liq_df = df_n.dropna(subset=[liq_col]) if liq_col in df_n else df_n.iloc[0:0]
 if not liq_df.empty:
-    # Один Bar-трейс с цветом на каждый столбик — нет проблем с overlay
-    bar_colors = [_COLOR_SURPLUS if v >= 0 else _COLOR_DEFICIT for v in liq_df[liq_col]]
-    fig_liq = go.Figure()
-    fig_liq.add_trace(go.Bar(
-        x=liq_df["date"],
-        y=liq_df[liq_col],
-        name="Профицит / Дефицит",
-        marker=dict(
-            color=bar_colors,
-            opacity=1.0,
-            line=dict(width=0),
-        ),
-        showlegend=False,
-    ))
-    # Ручные маркеры для легенды
-    fig_liq.add_trace(go.Scatter(
-        x=[None], y=[None], mode="markers",
-        marker=dict(color=_COLOR_SURPLUS, size=10, symbol="square"),
-        name="Профицит",
-    ))
-    fig_liq.add_trace(go.Scatter(
-        x=[None], y=[None], mode="markers",
-        marker=dict(color=_COLOR_DEFICIT, size=10, symbol="square"),
-        name="Дефицит",
-    ))
-    fig_liq.add_trace(go.Scatter(
-        x=liq_df["date"], y=liq_df["liquidity_deficit_surplus_bln_rub_change_5d"],
-        name="Изменение за 5д", mode="lines",
-        line=dict(color=_COLOR_CHANGE, width=1.5),
-        yaxis="y2",
-    ))
-    fig_liq.update_layout(
-        title="Дефицит/профицит ликвидности банковского сектора (млрд руб.)",
-        template=PLOTLY_TEMPLATE,
-        height=400,
-        hovermode="x unified",
-        yaxis_title="млрд руб.",
-        yaxis2=dict(title="Изменение (5д), млрд руб.", overlaying="y", side="right"),
-        title_y=0.98,
-        title_yanchor="top",
-        legend=dict(orientation="h", yanchor="top", y=1.0, xanchor="left", x=0),
-        margin=dict(l=40, r=60, t=88, b=40),
-    )
-    st.plotly_chart(fig_liq, use_container_width=True)
-else:
-    st.info("Данные по ликвидности отсутствуют.")
+    colors = ["#22C55E" if v >= 0 else "#EF4444" for v in liq_df[liq_col]]
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=liq_df["date"], y=liq_df[liq_col], marker=dict(color=colors), showlegend=False))
+    fig.update_layout(title="Дефицит/профицит ликвидности банковского сектора (млрд руб.)",
+                      template=PLOTLY_TEMPLATE, height=360, yaxis_title="млрд руб.",
+                      hovermode="x unified", margin=dict(l=40, r=40, t=60, b=40))
+    st.plotly_chart(fig, use_container_width=True)
+bf = df_n.dropna(subset=["budget_funds_total_mln_rub_lagged"]) if "budget_funds_total_mln_rub_lagged" in df_n else df_n.iloc[0:0]
+if not bf.empty:
+    st.plotly_chart(line_chart(bf, x="date", y=["budget_funds_total_mln_rub_lagged"], labels={"budget_funds_total_mln_rub_lagged": "Бюджетные средства (млн руб.)"}, title="Бюджетные средства в банках", yaxis_title="млн руб.", height=300), use_container_width=True)
 
-st.markdown("---")
-
-# --- Budget funds ---
-st.subheader("Бюджетные средства в банках")
-st.caption("Средства, размещённые Минфином/бюджетом в банковской системе (с лагом на дату публикации).")
-
-tab1, tab2 = st.tabs(["Общий объём", "Доля рублёвых средств"])
-
-with tab1:
-    bfunds_df = df.dropna(subset=["budget_funds_total_mln_rub_lagged"])
-    if not bfunds_df.empty:
-        fig_bf = line_chart(
-            bfunds_df, x="date",
-            y=["budget_funds_total_mln_rub_lagged"],
-            labels={"budget_funds_total_mln_rub_lagged": "Бюджетные средства (млн руб.)"},
-            title="Бюджетные средства в банках",
-            yaxis_title="млн руб.",
-            height=320,
-        )
-        st.plotly_chart(fig_bf, use_container_width=True)
-    else:
-        st.info("Данные по бюджетным средствам отсутствуют.")
-
-with tab2:
-    share_df = df.dropna(subset=["budget_funds_rub_share_lagged"])
-    if not share_df.empty:
-        fig_share = line_chart(
-            share_df, x="date",
-            y=["budget_funds_rub_share_lagged"],
-            labels={"budget_funds_rub_share_lagged": "Доля руб. средств"},
-            title="Доля рублёвых бюджетных средств",
-            yaxis_title="Доля (0–1)",
-            height=280,
-        )
-        st.plotly_chart(fig_share, use_container_width=True)
-    else:
-        st.info("Данные по доле рублёвых средств отсутствуют.")
-
-st.markdown("---")
-
-# --- Roskazna flows (только с 2020-01-01 — данные до этого отсутствуют) ---
-st.subheader("Операции Казначейства (Росказна)")
-st.caption("Данные Росказны доступны с 2021 года; график показывается с 2020-01-01.")
-
-_ROSKAZNA_START = pd.Timestamp("2020-01-01")
-rk_df = df[df["date"] >= _ROSKAZNA_START].copy()
-
-tab_a, tab_b, tab_c = st.tabs(["Чистые потоки (rolling)", "Первые / вторые ноги", "Аукционная активность"])
-
-with tab_a:
-    roll_cols = [
-        "roskazna_net_flow_rolling_7d_mln_rub",
-        "roskazna_net_flow_rolling_14d_mln_rub",
-        "roskazna_net_flow_rolling_30d_mln_rub",
-    ]
-    roll_labels = {
-        "roskazna_net_flow_rolling_7d_mln_rub": "Net flow 7д",
-        "roskazna_net_flow_rolling_14d_mln_rub": "Net flow 14д",
-        "roskazna_net_flow_rolling_30d_mln_rub": "Net flow 30д",
-    }
-    roll_df = rk_df.dropna(subset=roll_cols, how="all")
-    avail_cols = [c for c in roll_cols if c in roll_df.columns and roll_df[c].notna().any()]
-    if avail_cols:
-        horizon = st.selectbox(
-            "Горизонт rolling",
-            options=avail_cols,
-            format_func=lambda c: roll_labels.get(c, c),
-            key="m5_rolling_horizon",
-        )
-        fig_roll = line_chart(
-            roll_df, x="date", y=[horizon],
-            labels={horizon: roll_labels.get(horizon, horizon)},
-            title=f"Чистый поток Росказны ({roll_labels.get(horizon, horizon)})",
-            yaxis_title="млн руб.",
-            height=320,
-        )
-        st.plotly_chart(fig_roll, use_container_width=True)
-    else:
-        st.info("Данные по rolling net flow отсутствуют.")
-
-with tab_b:
-    leg_cols = {
-        "roskazna_first_leg_settled_volume_mln_rub": "Первая нога (размещение)",
-        "roskazna_second_leg_return_volume_mln_rub": "Вторая нога (возврат)",
-        "roskazna_net_flow_by_legs_mln_rub": "Чистый поток (ноги)",
-    }
-    avail_leg = [c for c in leg_cols if c in rk_df.columns]
-    if avail_leg:
-        fig_legs = line_chart(
-            rk_df.dropna(subset=avail_leg, how="all"),
-            x="date", y=avail_leg,
-            labels=leg_cols,
-            title="Объёмы размещения и возврата Росказны",
-            yaxis_title="млн руб.",
-            height=340,
-        )
-        st.plotly_chart(fig_legs, use_container_width=True)
-    else:
-        st.info("Данные по ногам отсутствуют.")
-
-with tab_c:
-    demand_col = "roskazna_demand_volume_mln_rub_lag_1d"
-    auction_df = rk_df[rk_df.get("roskazna_auction_day_flag_lag_1d", rk_df["date"].notna()) == 1].copy() \
-        if "roskazna_auction_day_flag_lag_1d" in rk_df.columns else rk_df.dropna(subset=[demand_col])
-
-    if not auction_df.empty and demand_col in auction_df.columns:
-        fig_demand = bar_chart(
-            auction_df.dropna(subset=[demand_col]),
-            x="date", y=demand_col,
-            title="Спрос на аукционах Росказны (млн руб.)",
-            yaxis_title="млн руб.",
-            height=300,
-        )
-        st.plotly_chart(fig_demand, use_container_width=True)
-    else:
-        st.info("Данные по спросу на аукционах Росказны отсутствуют.")
-
-st.markdown("---")
-
-# --- Raw table ---
-with st.expander("Таблица данных M5"):
-    cols_show = [
-        "date",
-        "liquidity_deficit_surplus_bln_rub_lag_1d",
-        "budget_funds_total_mln_rub_lagged",
-        "budget_funds_rub_share_lagged",
-        "roskazna_net_flow_by_legs_mln_rub",
-        "roskazna_net_flow_rolling_7d_mln_rub",
-        "roskazna_net_flow_rolling_30d_mln_rub",
-    ]
-    cols_show = [c for c in cols_show if c in df.columns]
-    st.dataframe(df[cols_show].sort_values("date", ascending=False), use_container_width=True, hide_index=True)
-    csv_download_button(df[cols_show], "m5_features.csv")
+# --- Таблица ---
+with st.expander("Таблица honest-признаков M5 (дневная шкала)"):
+    cols = ["date", "m5x_claims", "m5x_liab", "m5x_repostd", "m5x_secured", "m5x_rk_bidders"]
+    cols = [c for c in cols if c in df_h.columns]
+    st.dataframe(df_h[cols].sort_values("date", ascending=False), use_container_width=True, hide_index=True)
+    csv_download_button(df_h[cols], "m5_honest_features.csv")

@@ -14,11 +14,23 @@ from backend.src.services.lsi_thresholds import get_threshold_profile
 from backend.src.services.honest_lsi_prediction import DEFAULT_HONEST_PROFILE
 from backend.src.services.honest_lsi_prediction import get_honest_lsi_response
 from backend.src.services.honest_lsi_prediction import honest_add_lsi_scores
+from backend.src.services.honest_lsi_prediction import honest_module_feature_contributions
 from backend.src.services.honest_lsi_training import HONEST_GLOBAL_MODEL
 from backend.src.services.honest_lsi_training import HONEST_LOCAL_MODEL
-from backend.src.services.honest_lsi_training import load_honest_dataset
+# --- Storage (point 4): встроенный DuckDB warehouse как source of truth для чтения ---
+from backend.src.db import warehouse as wh
 
 DEFAULT_THRESHOLD_PROFILE = DEFAULT_HONEST_PROFILE
+
+
+def _load_table(name: str) -> pd.DataFrame:
+    """Читает таблицу из DuckDB warehouse (fallback на parquet внутри read_table),
+    парсит дату и сортирует — единая точка чтения для всех страниц дашборда."""
+    df = wh.read_table(name)
+    df = _parse_dates(df)
+    if "date" in df.columns:
+        df = df.sort_values("date").reset_index(drop=True)
+    return df
 
 
 def _parse_dates(df: pd.DataFrame, col: str = "date") -> pd.DataFrame:
@@ -39,44 +51,38 @@ def _parse_dates(df: pd.DataFrame, col: str = "date") -> pd.DataFrame:
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_m1() -> pd.DataFrame:
-    df = pd.read_parquet(DATASETS["m1"])
-    df = _parse_dates(df)
-    return df.sort_values("date").reset_index(drop=True)
+    return _load_table("m1_features")
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_m2() -> pd.DataFrame:
-    df = pd.read_parquet(DATASETS["m2"])
-    df = _parse_dates(df)
-    return df.sort_values("date").reset_index(drop=True)
+    return _load_table("m2_features")
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_m3() -> pd.DataFrame:
-    df = pd.read_parquet(DATASETS["m3"])
-    df = _parse_dates(df)
-    return df.sort_values("date").reset_index(drop=True)
+    return _load_table("m3_features")
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_m4() -> pd.DataFrame:
-    df = pd.read_parquet(DATASETS["m4"])
-    df = _parse_dates(df)
-    return df.sort_values("date").reset_index(drop=True)
+    return _load_table("m4_features")
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_m5() -> pd.DataFrame:
-    df = pd.read_parquet(DATASETS["m5"])
-    df = _parse_dates(df)
-    return df.sort_values("date").reset_index(drop=True)
+    return _load_table("m5_features")
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_final() -> pd.DataFrame:
-    df = pd.read_parquet(DATASETS["final"])
-    df = _parse_dates(df)
-    return df.sort_values("date").reset_index(drop=True)
+    return _load_table("final_ml_dataset")
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_honest() -> pd.DataFrame:
+    """honest_ml_dataset из warehouse (источник honest-фич для модулей и LSI)."""
+    return _load_table("honest_ml_dataset")
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -87,12 +93,19 @@ def load_lsi() -> pd.DataFrame:
     (M1/M2/M3/M5; M4 — налоговый overlay вне PCA). Возвращает колонки
     lsi / lsi_local / lsi_global / LSI_Index / LSI_Local / LSI_Global, как ждёт dashboard.
     """
-    data = load_honest_dataset()
+    data = load_honest()
 
     if not HONEST_GLOBAL_MODEL.exists() and not HONEST_LOCAL_MODEL.exists():
         return data
 
     return honest_add_lsi_scores(data)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_module_contribution(module: str, prefer: str = "local") -> dict[str, object]:
+    """Live-вклад honest-фич модуля (M1/M2/M3/M5) в текущий LSI для страницы модуля."""
+    data = load_honest()
+    return honest_module_feature_contributions(data, module=module, prefer=prefer)
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -102,7 +115,7 @@ def load_lsi_response(threshold_profile: str = DEFAULT_THRESHOLD_PROFILE) -> dic
     Числовые LSI-значения не пересчитываются — меняются только статусы (ЗЕЛЕНЫЙ/ЖЕЛТЫЙ/КРАСНЫЙ).
     Кеш учитывает threshold_profile: каждый профиль кешируется отдельно.
     """
-    data = load_honest_dataset()
+    data = load_honest()
     return get_honest_lsi_response(data, threshold_profile=threshold_profile)
 
 
