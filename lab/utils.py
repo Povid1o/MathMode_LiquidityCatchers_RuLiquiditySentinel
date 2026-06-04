@@ -1031,3 +1031,171 @@ def build_honest_features():
     global_wl = M1 + M2 + M3 + M5G            # M4 — overlay, не в PCA
     local_wl = global_wl + ["m5x_rk_bidders"]
     return d, global_wl, local_wl
+
+
+def explain_lsi_point(art, frame: pd.DataFrame, date, top_n: int = 12):
+    """Точечная объяснимость: вклад фич в LSI на конкретную дату (EVR-attribution).
+
+    Для строки за `date`: вклад фичи j = |scaled[j]| * structural_weight[j],
+    нормированный до 100%. Возвращает (idx, table, module_pct), где table:
+    feature, module, contrib_%, z_scaled (насколько фича аномальна), raw.
+    """
+    idx = int(np.argmin(np.abs(pd.to_datetime(frame["date"]) - pd.Timestamp(date))))
+    feats = art["features"]; scaled = art["scaled_matrix"][idx]
+    sw = np.abs(art["pca"].components_).T @ art["pca"].explained_variance_ratio_
+    contrib = np.abs(scaled) * sw
+    pct = contrib / contrib.sum() * 100
+    table = pd.DataFrame({
+        "feature": feats,
+        "module": [f[:2].upper() for f in feats],
+        "contrib_%": np.round(pct, 1),
+        "z_scaled": np.round(scaled, 2),
+        "raw": [round(float(pd.to_numeric(frame[f], errors="coerce").iloc[idx]), 3) for f in feats],
+    }).sort_values("contrib_%", ascending=False).reset_index(drop=True)
+    module_pct = {m: round(float(sum(pct[i] for i, f in enumerate(feats) if f[:2].upper() == m)), 1)
+                  for m in ["M1", "M2", "M3", "M5"]}
+    return idx, table.head(top_n), module_pct
+
+
+# ----------------------------------------------------------------------------
+# Explainability engine (12_explainability_engine): point + components + SHAP
+# ----------------------------------------------------------------------------
+# Маппинг honest-фичи -> исходная raw-колонка для трассировки графиком.
+# Производные фичи (cover/placement/cutoff_spread) raw-источника не имеют —
+# для них рисуется сама фича (MAD-score), что и видит модель.
+HONEST_FEATURE_RAW = {
+    "m1_spread_mad_score": ("m1_dataset.csv", "date", "spread", "избыток резервов (spread), млрд ₽"),
+    "m1_spread_relative_mad_score": ("m1_dataset.csv", "date", "spread", "избыток резервов (spread), млрд ₽"),
+    "m1_spread_vol": ("m1_dataset.csv", "date", "spread", "избыток резервов (spread), млрд ₽"),
+    "m1_reserve_load_mad_score": ("m1_dataset.csv", "date", "actual_balances", "остатки банков, млрд ₽"),
+    "m1_ruonia_mad_score": ("ruonia.csv", "date", "ruonia_rate", "RUONIA, %"),
+    "m5x_claims": ("cbr_liquidity.csv", "date", "cbr_claims_standard_instruments_bln_rub", "ЦБ кредитует банки, млрд ₽"),
+    "m5x_liab": ("cbr_liquidity.csv", "date", "cbr_liabilities_standard_instruments_bln_rub", "ЦБ абсорбирует, млрд ₽"),
+    "m5x_repostd": ("cbr_liquidity.csv", "date", "repo_fx_swap_standing_bln_rub", "штрафное РЕПО, млрд ₽"),
+    "m5x_secured": ("cbr_liquidity.csv", "date", "secured_loans_standing_bln_rub", "штрафные кредиты, млрд ₽"),
+    "m5x_rk_bidders": ("roskazna_treasury_deposits.csv", "auction_date", "bidders_count", "участников аукциона ЕКС"),
+}
+
+_MOD_NAMES = {"M1": "резервы/RUONIA", "M2": "РЕПО-аукционы", "M3": "ОФЗ-аукционы", "M5": "ликвидность ЦБ/ЕКС"}
+
+
+def _raw_trace(feature, date, window_days):
+    """Возвращает (dates, values, label) raw-источника фичи в окне или None."""
+    if feature not in HONEST_FEATURE_RAW:
+        return None
+    fname, dcol, vcol, label = HONEST_FEATURE_RAW[feature]
+    df = pd.read_csv(data_dir() / fname)
+    df[dcol] = pd.to_datetime(df[dcol], dayfirst=True, format="mixed", errors="coerce")
+    lo, hi = pd.Timestamp(date) - pd.Timedelta(days=window_days), pd.Timestamp(date) + pd.Timedelta(days=20)
+    sub = df[(df[dcol] >= lo) & (df[dcol] <= hi)].sort_values(dcol)
+    if feature == "m5x_rk_bidders":
+        sub = sub.groupby(dcol, as_index=False)[vcol].sum()
+    return sub[dcol].values, pd.to_numeric(sub[vcol], errors="coerce").values, label
+
+
+def _module_contrib_matrix(art):
+    """Per-row вклад модулей % (M1/M2/M3/M5), shape (n_rows, n_modules)."""
+    sw = np.abs(art["pca"].components_).T @ art["pca"].explained_variance_ratio_
+    con = np.abs(art["scaled_matrix"]) * sw
+    con = con / con.sum(1, keepdims=True) * 100
+    feats = art["features"]
+    out = {}
+    for m in ["M1", "M2", "M3", "M5"]:
+        idx = [j for j, f in enumerate(feats) if f[:2].upper() == m]
+        out[m] = con[:, idx].sum(1) if idx else np.zeros(len(con))
+    return pd.DataFrame(out)
+
+
+def explain_lsi_point_full(art, frame, date, window_days=45, top_n=8, make_plot=True):
+    """ПОЛНАЯ точечная объяснимость: модули → драйверы → как формировался сигнал (графики).
+
+    Печатает структурное объяснение и (make_plot) рисует 4 панели:
+    (1) LSI вокруг даты, (2) топ-драйверы (MAD) в окне, (3) вклад модулей во времени,
+    (4) raw-источник #1 драйвера. Возвращает dict со всеми числами.
+    """
+    plt = _mpl()
+    idx, table, module_pct = explain_lsi_point(art, frame, date, top_n=top_n)
+    fdates = pd.to_datetime(frame["date"]); the_date = fdates.iloc[idx]
+    lsi_val = float(art["lsi"][idx])
+
+    # структурный текст
+    mods_sorted = sorted(module_pct.items(), key=lambda kv: -kv[1])
+    print(f"LSI на {the_date.date()} = {lsi_val:.1f}")
+    print("Вклад модулей: " + ", ".join(f"{m} {p:.0f}% ({_MOD_NAMES.get(m,'')})" for m, p in mods_sorted))
+    print("Топ-драйверы (фича | вклад% | z | направление):")
+    for _, row in table.iterrows():
+        direction = "↑ выше нормы" if row["z_scaled"] > 0 else "↓ ниже нормы"
+        print(f"   {row['feature']:30s} {row['contrib_%']:5.1f}%  z={row['z_scaled']:+.2f}  {direction}")
+
+    fig = None
+    if make_plot:
+        win = (fdates >= the_date - pd.Timedelta(days=window_days)) & (fdates <= the_date + pd.Timedelta(days=20))
+        wx = fdates[win]
+        mc = _module_contrib_matrix(art)
+        fig, ax = plt.subplots(2, 2, figsize=(15, 8))
+        # 1. LSI
+        ax[0, 0].plot(wx, art["lsi"][win.values], marker="o", ms=3, color="tab:purple")
+        ax[0, 0].axvline(the_date, color="r", ls="--", lw=.8); ax[0, 0].axhline(60, color="r", ls=":", lw=.6)
+        ax[0, 0].set_title(f"LSI вокруг {the_date.date()}"); ax[0, 0].grid(alpha=.2); ax[0, 0].tick_params(axis="x", rotation=30)
+        # 2. top driver features (MAD) over window
+        for f in table["feature"].head(5):
+            ax[0, 1].plot(wx, pd.to_numeric(frame[f], errors="coerce").values[win.values], marker=".", ms=3, label=f)
+        ax[0, 1].axvline(the_date, color="r", ls="--", lw=.8)
+        ax[0, 1].set_title("Топ-драйверы (MAD-score) в окне"); ax[0, 1].legend(fontsize=7); ax[0, 1].grid(alpha=.2); ax[0, 1].tick_params(axis="x", rotation=30)
+        # 3. module contribution over window
+        for m in ["M1", "M2", "M3", "M5"]:
+            ax[1, 0].plot(wx, mc[m].values[win.values], marker=".", ms=3, label=f"{m} ({_MOD_NAMES[m]})")
+        ax[1, 0].axvline(the_date, color="r", ls="--", lw=.8)
+        ax[1, 0].set_title("Вклад модулей во времени, %"); ax[1, 0].legend(fontsize=7); ax[1, 0].grid(alpha=.2); ax[1, 0].tick_params(axis="x", rotation=30)
+        # 4. raw trace of #1 driver
+        top = table["feature"].iloc[0]; tr = _raw_trace(top, the_date, window_days)
+        if tr is not None:
+            ax[1, 1].plot(tr[0], tr[1], marker="o", ms=3, color="tab:green"); ax[1, 1].set_title(f"СЫРЬЁ #1 драйвера: {tr[2]}")
+        else:
+            ax[1, 1].plot(wx, pd.to_numeric(frame[top], errors="coerce").values[win.values], marker="o", ms=3, color="tab:green")
+            ax[1, 1].set_title(f"{top} (производная фича, MAD)")
+        ax[1, 1].axvline(the_date, color="r", ls="--", lw=.8); ax[1, 1].grid(alpha=.2); ax[1, 1].tick_params(axis="x", rotation=30)
+        fig.suptitle(f"Формирование сигнала LSI на {the_date.date()} (LSI={lsi_val:.0f})", fontsize=13, y=1.02)
+        fig.tight_layout()
+    return {"date": the_date, "lsi": lsi_val, "module_pct": module_pct, "drivers": table, "fig": fig}
+
+
+def explain_components_point(art, frame, date, top_load=4):
+    """Декомпозиция по компонентам PCA: какие независимые факторы активны в точке.
+
+    Возвращает DataFrame: PC, EVR%, активация(z), доминирующий модуль, топ-loadings.
+    """
+    idx = int(np.argmin(np.abs(pd.to_datetime(frame["date"]) - pd.Timestamp(date))))
+    pca = art["pca"]; feats = art["features"]
+    scores = pca.transform(art["scaled_matrix"][idx:idx + 1])[0]
+    all_scores = pca.transform(art["scaled_matrix"])
+    rows = []
+    for k in range(min(5, len(scores))):
+        z = (scores[k] - all_scores[:, k].mean()) / (all_scores[:, k].std() + 1e-9)
+        load = pd.Series(pca.components_[k], index=feats)
+        top = load.reindex(load.abs().sort_values(ascending=False).index).head(top_load)
+        dom_mod = pd.Series([f[:2].upper() for f in top.index]).mode().iloc[0]
+        rows.append({"PC": f"PC{k+1}", "EVR_%": round(pca.explained_variance_ratio_[k] * 100, 1),
+                     "активация_z": round(float(z), 2), "фактор(модуль)": _MOD_NAMES.get(dom_mod, dom_mod),
+                     "топ-loadings": ", ".join(f"{f}({v:+.2f})" for f, v in top.items())})
+    return pd.DataFrame(rows)
+
+
+def if_shap_point(art, frame, date, background_n=50, nsamples=200, top_n=12):
+    """SHAP-атрибуция для полного пайплайна (Scaler→PCA→IsolationForest) в точке.
+
+    Возвращает Series SHAP-значений по фичам (вклад в anomaly-score). Требует пакет shap.
+    """
+    import shap
+    idx = int(np.argmin(np.abs(pd.to_datetime(frame["date"]) - pd.Timestamp(date))))
+    feats = art["features"]; sc = art["scaler"]; pca = art["pca"]; iso = art["iso"]
+    X = frame[feats].astype(float).fillna(0).values
+
+    def fn(Z):
+        return -iso.decision_function(pca.transform(sc.transform(Z)))
+
+    bg = shap.sample(X, min(background_n, len(X)), random_state=0)
+    expl = shap.KernelExplainer(fn, bg)
+    sv = expl.shap_values(X[idx:idx + 1], nsamples=nsamples, silent=True)
+    s = pd.Series(np.asarray(sv).ravel(), index=feats)
+    return s.reindex(s.abs().sort_values(ascending=False).index).head(top_n)
