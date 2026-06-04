@@ -286,17 +286,64 @@ def _local_xml_files(raw_dir: Path = RAW_DIR) -> list[Path]:
     )
 
 
-def prepare_roskazna_treasury_deposits(raw_dir: Path = RAW_DIR) -> list[Path]:
-    """Скачивает XML Росказны из сохраненных ссылок и проверяет raw-директорию"""
+def _download_pages_by_year(
+    years: list[int],
+    *,
+    allow_unverified_ssl: bool,
+) -> None:
+    """Качает HTML-архив: прошлые годы из кеша (force=False), текущий год — заново."""
+    today_year = date.today().year
+    past_years = [year for year in years if year < today_year]
+    current_years = [year for year in years if year >= today_year]
+    if past_years:
+        download_roskazna_html_pages(
+            years=past_years, force=False, allow_unverified_ssl=allow_unverified_ssl
+        )
+    if current_years:
+        # текущий год перекачиваем, чтобы увидеть свежие депозиты
+        download_roskazna_html_pages(
+            years=current_years, force=True, allow_unverified_ssl=allow_unverified_ssl
+        )
+
+
+def prepare_roskazna_treasury_deposits(
+    raw_dir: Path = RAW_DIR,
+    *,
+    update_pages: bool = True,
+    years: list[int] | None = None,
+    allow_unverified_ssl: bool = False,
+) -> list[Path]:
+    """Готовит raw-файлы Росказны для пайплайна.
+
+    В отличие от старой версии, при необходимости сам **скачивает HTML-архив**
+    (как CLI `main`), а не полагается на ранее закешированные страницы/ссылки.
+    Если по сети ничего не пришло, пробует ещё раз с отключённой проверкой SSL
+    (у roskazna.gov.ru исторически бывают проблемы с цепочкой сертификатов).
+    """
+    if years is None:
+        years = list(range(DEFAULT_START_YEAR, date.today().year + 1))
+
+    if update_pages:
+        _download_pages_by_year(years, allow_unverified_ssl=allow_unverified_ssl)
+        # сеть/SSL не дали ни одной страницы — повторяем без проверки сертификата
+        if not any(PAGES_DIR.glob("*.html")) and not allow_unverified_ssl:
+            print("Повторная попытка скачивания страниц Росказны без проверки SSL")
+            _download_pages_by_year(years, allow_unverified_ssl=True)
+
     links = collect_roskazna_xml_links()
     if links:
-        download_roskazna_xml_files(links, raw_dir)
+        download_roskazna_xml_files(links, raw_dir, allow_unverified_ssl=allow_unverified_ssl)
+        # XML не скачались (вероятно SSL) — повторяем без проверки сертификата
+        if not _local_xml_files(raw_dir) and not allow_unverified_ssl:
+            print("Повторная попытка скачивания XML Росказны без проверки SSL")
+            download_roskazna_xml_files(links, raw_dir, allow_unverified_ssl=True)
 
     files = _local_xml_files(raw_dir)
 
     if not files:
         raise FileNotFoundError(
-            "Не найдены XML-файлы Росказны и XML-ссылки для скачивания"
+            "Не найдены XML-файлы Росказны: не удалось скачать HTML-архив и собрать "
+            f"XML-ссылки. Проверьте доступ к источнику: {SOURCE_URL}"
         )
 
     return files

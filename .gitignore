@@ -9,6 +9,11 @@ data/raw/treasury_funds/roskazna_pages/
 .streamlit/config.toml
 outputs/*
 
+# Локальная витрина DuckDB — генерируется из processed:
+#   python -m backend.src.db.warehouse  (или кнопкой «Данные ⚙️» в дашборде)
+*.duckdb
+*.duckdb.wal
+
 ### Data ###
 *.csv
 !data/processed/roskazna_treasury_deposits.csv
@@ -301,3 +306,20 @@ pip-selfcheck.json
 .ionide
 
 # End of https://www.toptal.com/developers/gitignore/api/visualstudiocode,python,jupyternotebooks,data
+
+# ============================================================================
+# Регенерируемые артефакты — НЕ версионируем (восстанавливаются пайплайном):
+#   python -m backend.src.pipelines.refresh_pipeline
+# Правила в конце файла => перекрывают более ранний whitelist (last match wins).
+# ============================================================================
+# Обработанные данные и модели (пересобираются/переобучаются на каждый refresh)
+data/processed/
+models/
+# Сырьё, скачиваемое загрузчиками (кроме семени налогового календаря ФНС)
+data/raw/keyrate/
+data/raw/ofz_auctions/
+data/raw/repo/
+data/raw/required_reserves/
+data/raw/ruonia/
+data/raw/treasury_funds/
+# (data/raw/tax_calendar/ остаётся в репозитории как seed — не игнорируется)
