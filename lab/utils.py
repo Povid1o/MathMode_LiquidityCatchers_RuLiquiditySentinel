@@ -934,3 +934,100 @@ def load_m2_daily_profile() -> pd.DataFrame:
     df = pd.read_parquet(p) if p.exists() else pd.read_csv(data_dir() / "m2_daily_profile.csv")
     df["date"] = pd.to_datetime(df["date"], dayfirst=True, format="mixed", errors="coerce")
     return df.sort_values("date").reset_index(drop=True)
+
+
+# ----------------------------------------------------------------------------
+# Combined honest features (Phase A capstone) — 11_combined_honest_lsi
+# ----------------------------------------------------------------------------
+def _mad_rolling(s, win: int = 756):
+    """MAD-score по скользящему окну (как в feature-builders)."""
+    s = pd.to_numeric(s, errors="coerce")
+    med = s.rolling(win, min_periods=120).median()
+    m = (s - med).abs().rolling(win, min_periods=120).median()
+    return ((s - med) / m.clip(lower=0.05)).clip(-5, 5)
+
+
+def build_honest_features():
+    """Собирает ВСЕ honest-фичи M1-M5 (Phase A) в один фрейм + Global/Local whitelist.
+
+    Возвращает (df, global_wl, local_wl). M4 — overlay (вне PCA, не в whitelist).
+    Парсинг источников НЕ меняется — только пересчёт фич на копии данных.
+    """
+    dd = data_dir()
+    d = load_final_dataset()
+    cal = d[["date"]].copy(); cal["date"] = pd.to_datetime(cal["date"])
+
+    # ---- M1: 4 MAD + волатильность резервов (|spread_delta|) ----
+    d["m1_spread_vol"] = pd.to_numeric(d["m1_spread_delta_mad_score"], errors="coerce").abs()
+
+    # ---- M2: base_cover + cutoff_spread + short-события ----
+    prof = load_m2_daily_profile()
+    d = d.merge(prof[["date", "m2_base_cover_mad", "m2_short_age_days"]], on="date", how="left")
+    d["m2_short_active30"] = (d["m2_short_age_days"] <= 30).astype(int)
+    d["m2_days_since_short"] = np.minimum(d["m2_short_age_days"].fillna(365), 90)
+    f2 = load_m2_features()
+    r = pd.read_csv(dd / "ruonia.csv"); r["date"] = pd.to_datetime(r["date"], dayfirst=True, format="mixed")
+    fb = f2[f2.tier == "base"].copy(); fb["cutoff_rate"] = pd.to_numeric(fb["cutoff_rate"], errors="coerce")
+    fb = fb.dropna(subset=["cutoff_rate"]).merge(r[["date", "ruonia_rate"]], on="date", how="left")
+    fb["cs"] = fb["cutoff_rate"] - fb["ruonia_rate"]
+    fb = fb.dropna(subset=["cs"]).sort_values("date")[["date", "cs"]]
+    cs = pd.merge_asof(cal.sort_values("date"), fb, on="date", direction="backward", tolerance=pd.Timedelta(days=7))
+    d["m2_cutoff_spread"] = cs["cs"].values
+    d["m2_cutoff_spread_available"] = cs["cs"].notna().astype(int).values
+
+    # ---- M3: event-aware cover/placement/yield_to_key + age/available/days_since/failed ----
+    raw, dc = load_raw_csv("ofz_auctions.csv")
+    for c in ["offered_amount", "demand_amount", "placed_amount", "cutoff_yield"]:
+        raw[c] = pd.to_numeric(raw[c], errors="coerce")
+    def _agg(x):
+        off, dem, pla = x.offered_amount.sum(), x.demand_amount.sum(), x.placed_amount.sum()
+        wy = (x.cutoff_yield * x.placed_amount).sum() / pla if pla > 0 else np.nan
+        return pd.Series({"offered": off, "demand": dem, "placed": pla, "cutoff_y": wy})
+    g = raw.groupby(dc).apply(_agg).reset_index().rename(columns={dc: "date"})
+    g["date"] = pd.to_datetime(g["date"]); g = g.sort_values("date").reset_index(drop=True)
+    g["cover"] = g.demand / g.offered; g["placement"] = g.placed / g.offered; g["failed"] = (g.placed == 0).astype(int)
+    k = pd.read_csv(dd / "keyrate.csv"); k["date"] = pd.to_datetime(k["date"], dayfirst=True, format="mixed"); k = k.sort_values("date")
+    g = pd.merge_asof(g, k, on="date", direction="backward"); g["yield_to_key"] = g.cutoff_y - g.key_rate
+    def _mad_series(col):
+        s = g.dropna(subset=[col]).copy().sort_values("date"); vals = s[col].values; ds = s["date"].values
+        out = []; W = np.timedelta64(365 * 3, "D")
+        for i in range(len(s)):
+            w = vals[(ds > ds[i] - W) & (ds <= ds[i])]; med = np.median(w)
+            m = max(np.median(np.abs(w - med)), 0.05); out.append((vals[i] - med) / m)
+        s["mad"] = out; return s[["date", "mad"]]
+    for nm, col, sign in [("m3x_cover", "cover", -1), ("m3x_placement", "placement", -1), ("m3x_yield_to_key", "yield_to_key", 1)]:
+        ms = _mad_series(col); ms["mad"] = ms["mad"] * sign
+        d[nm] = pd.merge_asof(cal.sort_values("date"), ms.sort_values("date"), on="date", direction="backward")["mad"].values
+    af = d["m3_auction_flag"].fillna(0).values; age = np.empty(len(d)); last = -10**9
+    for i, v in enumerate(af):
+        if v == 1: last = i
+        age[i] = i - last if last > -10**8 else 9999
+    age = pd.Series(age); first = int(np.argmax(af == 1)); dss = age.copy(); dss[:first] = 0; dss = dss.clip(0, 250)
+    d["m3x_age"] = np.minimum(age.clip(lower=0), 90); d["m3x_available"] = (age.between(0, 10)).astype(int)
+    d["m3x_days_since"] = dss.values; fdays = set(g[g.failed == 1]["date"]); d["m3x_failed"] = pd.to_datetime(d["date"]).isin(fdays).astype(int)
+
+    # ---- M5: claims/liabilities/repo_standing/secured_standing (+rk_bidders для Local) ----
+    liq = pd.read_csv(dd / "cbr_liquidity.csv"); liq["date"] = pd.to_datetime(liq["date"], dayfirst=True, format="mixed")
+    for c in liq.columns:
+        if c != "date": liq[c] = pd.to_numeric(liq[c], errors="coerce")
+    def _dly(src, col):
+        t = src[["date", col]].copy(); t["m"] = _mad_rolling(t[col])
+        return pd.merge_asof(cal.sort_values("date"), t[["date", "m"]], on="date", direction="backward")["m"].values
+    d["m5x_claims"] = _dly(liq, "cbr_claims_standard_instruments_bln_rub")
+    d["m5x_liab"] = _dly(liq, "cbr_liabilities_standard_instruments_bln_rub")
+    d["m5x_repostd"] = _dly(liq, "repo_fx_swap_standing_bln_rub")
+    d["m5x_secured"] = _dly(liq, "secured_loans_standing_bln_rub")
+    rk = pd.read_csv(dd / "roskazna_treasury_deposits.csv"); rk["date"] = pd.to_datetime(rk["auction_date"], dayfirst=True, format="mixed")
+    gb = rk.groupby("date")["bidders_count"].sum().reset_index()
+    d["m5x_rk_bidders"] = _dly(gb, "bidders_count")
+
+    new_cols = [c for c in d.columns if c.startswith(("m1_spread_vol", "m2_base_cover", "m2_cutoff", "m2_short", "m2_days_since", "m3x_", "m5x_"))]
+    d[new_cols] = d[new_cols].fillna(0)
+
+    M1 = ["m1_spread_mad_score", "m1_spread_relative_mad_score", "m1_reserve_load_mad_score", "m1_ruonia_mad_score", "m1_spread_vol"]
+    M2 = ["m2_auction_flag", "m2_Flag_Demand", "m2_base_cover_mad", "m2_cutoff_spread", "m2_cutoff_spread_available", "m2_short_active30", "m2_days_since_short"]
+    M3 = ["m3_auction_flag", "m3_Flag_Nedospros", "m3x_cover", "m3x_placement", "m3x_yield_to_key", "m3x_age", "m3x_available", "m3x_days_since", "m3x_failed"]
+    M5G = ["m5x_claims", "m5x_liab", "m5x_repostd", "m5x_secured"]
+    global_wl = M1 + M2 + M3 + M5G            # M4 — overlay, не в PCA
+    local_wl = global_wl + ["m5x_rk_bidders"]
+    return d, global_wl, local_wl
