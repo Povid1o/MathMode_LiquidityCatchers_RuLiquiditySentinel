@@ -56,8 +56,10 @@ M3_FEATURES = ["m3_auction_flag", "m3_Flag_Nedospros", "m3x_cover", "m3x_placeme
 
 ### Агрегация аукционов за день
 ```python
-offered = Σ offered_amount;  demand = Σ demand_amount;  placed = Σ placed_amount
-cutoff_y = Σ(cutoff_yield · placed_amount) / placed        # доходность, взвеш. по размещению
+offered = Σ offered_amount;  demand = Σ demand_amount;  placed = Σ placed_amount   # по ВСЕМ выпускам
+# доходность/премию считаем ТОЛЬКО по номинальным ОФЗ-ПД (флоатеры ОФЗ-ПК с нулевой
+# доходностью и инфляционные ОФЗ-ИН с реальной доходностью искажают усреднение):
+cutoff_y = Σ_ПД(cutoff_yield · placed_amount) / Σ_ПД(placed_amount)
 cover     = demand / offered
 placement = placed / offered
 failed    = (placed == 0)

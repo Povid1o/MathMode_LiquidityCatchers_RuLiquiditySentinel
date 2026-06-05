@@ -981,7 +981,11 @@ def build_honest_features():
         raw[c] = pd.to_numeric(raw[c], errors="coerce")
     def _agg(x):
         off, dem, pla = x.offered_amount.sum(), x.demand_amount.sum(), x.placed_amount.sum()
-        wy = (x.cutoff_yield * x.placed_amount).sum() / pla if pla > 0 else np.nan
+        # доходность/премию считаем только по номинальным ОФЗ-ПД (ОФЗ-ПК флоатеры с
+        # нулевой доходностью и ОФЗ-ИН с реальной доходностью искажают cutoff_y)
+        xf = x[x["security_type"] == "ОФЗ-ПД"]
+        plaf = xf.placed_amount.sum()
+        wy = (xf.cutoff_yield * xf.placed_amount).sum() / plaf if plaf > 0 else np.nan
         return pd.Series({"offered": off, "demand": dem, "placed": pla, "cutoff_y": wy})
     g = raw.groupby(dc).apply(_agg).reset_index().rename(columns={dc: "date"})
     g["date"] = pd.to_datetime(g["date"]); g = g.sort_values("date").reset_index(drop=True)

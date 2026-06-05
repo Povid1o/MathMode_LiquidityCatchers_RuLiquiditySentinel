@@ -108,7 +108,11 @@ def build_honest_dataset(final_dataset_path: Path = FINAL_DATASET_FILE) -> pd.Da
 
     def _agg(x: pd.DataFrame) -> pd.Series:
         off, dem, pla = x.offered_amount.sum(), x.demand_amount.sum(), x.placed_amount.sum()
-        wy = (x.cutoff_yield * x.placed_amount).sum() / pla if pla > 0 else np.nan
+        # Доходность/премию к ключевой считаем только по номинальным ОФЗ-ПД:
+        # ОФЗ-ПК (флоатеры, yield=0) и ОФЗ-ИН (реальная доходность) искажают cutoff_y.
+        xf = x[x["security_type"] == "ОФЗ-ПД"]
+        plaf = xf.placed_amount.sum()
+        wy = (xf.cutoff_yield * xf.placed_amount).sum() / plaf if plaf > 0 else np.nan
         return pd.Series({"offered": off, "demand": dem, "placed": pla, "cutoff_y": wy})
 
     g = raw.groupby("date").apply(_agg).reset_index().sort_values("date").reset_index(drop=True)

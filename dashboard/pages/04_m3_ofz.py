@@ -34,13 +34,13 @@ if df_h.empty:
 cutoff = df_h["date"].min()
 df_n = df_native[df_native["date"] >= cutoff].copy()
 
-# --- KPI ---
-st.subheader("Последние значения")
+# --- KPI (сырые значения последнего аукциона, не нормализованные) ---
+st.subheader("Последние значения (по последнему аукциону)")
 c1, c2, c3, c4 = st.columns(4)
 with c1:
-    latest_value_metric("Переподписка (event-aware)", df_h["m3x_cover"], fmt="{:.2f}")
+    latest_value_metric("Переподписка (cover ratio)", df_n["cover_ratio"], fmt="{:.2f}")
 with c2:
-    latest_value_metric("Премия доходности к ключевой", df_h["m3x_yield_to_key"], fmt="{:.3f}")
+    latest_value_metric("Средневзв. доходность ОФЗ-ПД, %", df_n["weighted_yield"], fmt="{:.2f}", suffix="%")
 with c3:
     latest_value_metric("Дней с последнего аукциона", df_h["m3x_days_since"], fmt="{:.0f}")
 with c4:
@@ -55,12 +55,26 @@ honest_driver_panel(load_module_contribution("M3"), color=COLORS["primary"])
 # --- Honest-драйверы (daily) ---
 st.markdown("---")
 st.subheader("Honest-признаки M3 (дневная шкала, вход в LSI)")
-st.caption("ОФЗ-аукционы разрежены (обычно среды); event-aware признаки доведены до дневной шкалы — так их видит индекс.")
-t1, t2, t3 = st.tabs(["Переподписка / размещение", "Премия доходности", "Возраст / дней с последнего"])
+st.caption(
+    "⚠️ Это **нормализованные MAD-аномалии (z-оценки)**, а НЕ сырые значения. "
+    "Шкала безразмерная: 0 — норма, выше — отклонение в сторону стресса (для cover/placement "
+    "знак инвертирован: рост = недоспрос/недоразмещение). Сырые значения (cover ratio, "
+    "доходность в %) — ниже, в блоке «Сырой контекст»."
+)
+with st.expander("Что это за признаки M3? (расшифровка)"):
+    st.markdown(
+        "- **Аномалия переподписки** (`m3x_cover`) — отклонение спроса/предложения от нормы; рост = недоспрос.\n"
+        "- **Аномалия размещения** (`m3x_placement`) — отклонение доли размещённого объёма; рост = Минфин не смог продать выпуск.\n"
+        "- **Аномалия премии доходности** (`m3x_yield_to_key`) — отклонение премии «доходность ОФЗ-ПД − ключевая ставка»; рост = вынужденная премия за спрос.\n"
+        "- **Возраст / дней с последнего** (`m3x_age`, `m3x_days_since`) — свежесть аукционных данных, в днях (с ограничением сверху).\n\n"
+        "Все аномалии считаются по событиям (event-time MAD за ~3 года) и доводятся до дневной шкалы. "
+        "Доходность и премия — только по номинальным **ОФЗ-ПД** (флоатеры ОФЗ-ПК и инфляционные ОФЗ-ИН исключены как несопоставимые)."
+    )
+t1, t2, t3 = st.tabs(["Аномалия спроса/размещения (MAD)", "Аномалия премии доходности (MAD)", "Возраст / дней с последнего (дни)"])
 with t1:
-    st.plotly_chart(line_chart(df_h, x="date", y=["m3x_cover", "m3x_placement"], labels={"m3x_cover": "Переподписка", "m3x_placement": "Доля размещения"}, title="Спрос и размещение ОФЗ (event-aware)", yaxis_title="доля", height=320), use_container_width=True)
+    st.plotly_chart(line_chart(df_h, x="date", y=["m3x_cover", "m3x_placement"], labels={"m3x_cover": "Аномалия переподписки", "m3x_placement": "Аномалия размещения"}, title="Аномалии спроса и размещения ОФЗ (event-time MAD)", yaxis_title="MAD-оценка (z); вверх = стресс", height=320), use_container_width=True)
 with t2:
-    st.plotly_chart(line_chart(df_h, x="date", y=["m3x_yield_to_key"], labels={"m3x_yield_to_key": "Премия доходности к ключевой"}, title="Премия доходности ОФЗ к ключевой ставке", yaxis_title="п.п.", height=320), use_container_width=True)
+    st.plotly_chart(line_chart(df_h, x="date", y=["m3x_yield_to_key"], labels={"m3x_yield_to_key": "Аномалия премии доходности"}, title="Аномалия премии доходности ОФЗ-ПД к ключевой (event-time MAD)", yaxis_title="MAD-оценка (z); вверх = стресс", height=320), use_container_width=True)
 with t3:
     st.plotly_chart(line_chart(df_h, x="date", y=["m3x_age", "m3x_days_since"], labels={"m3x_age": "Возраст аукциона", "m3x_days_since": "Дней с последнего"}, title="Свежесть аукционных данных ОФЗ", yaxis_title="дни", height=320), use_container_width=True)
 
@@ -77,8 +91,8 @@ if not df_n.empty:
     yld_df = df_n.dropna(subset=["weighted_yield"]) if "weighted_yield" in df_n else df_n.iloc[0:0]
     if not yld_df.empty:
         st.plotly_chart(
-            line_chart(yld_df, x="date", y=["weighted_yield"], labels={"weighted_yield": "Средневзв. доходность (%)"},
-                       title="Средневзвешенная доходность размещений ОФЗ", yaxis_title="% годовых", height=300),
+            line_chart(yld_df, x="date", y=["weighted_yield"], labels={"weighted_yield": "Средневзв. доходность ОФЗ-ПД (%)"},
+                       title="Средневзвешенная доходность размещений ОФЗ-ПД", yaxis_title="% годовых", height=300),
             use_container_width=True,
         )
     st.plotly_chart(

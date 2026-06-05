@@ -58,14 +58,22 @@ def _sum_values(rows: list[dict[str, str]], column: str) -> float:
 
 
 def _weighted_average_yield(rows: list[dict[str, str]]) -> float | None:
-    """Считает средневзвешенную доходность за день"""
+    """Считает средневзвешенную доходность за день только по ОФЗ-ПД.
+
+    ОФЗ-ПК (флоатеры) торгуются по спреду и публикуются с нулевой доходностью,
+    а ОФЗ-ИН имеют реальную доходность, несопоставимую с номинальной. Усреднение
+    их вместе с номинальными ОФЗ-ПД искажало бы показатель (и премию к ключевой),
+    поэтому учитываем только номинальные фиксированные выпуски ОФЗ-ПД.
+    """
     numerator = 0.0
     denominator = 0.0
 
     for row in rows:
+        if row.get("security_type") != "ОФЗ-ПД":
+            continue
         value = _to_float(row.get("weighted_average_yield"))
         weight = _to_float(row.get("placed_amount"))
-        if value is None or weight is None or weight <= 0:
+        if value is None or value <= 0 or weight is None or weight <= 0:
             continue
 
         numerator += value * weight
