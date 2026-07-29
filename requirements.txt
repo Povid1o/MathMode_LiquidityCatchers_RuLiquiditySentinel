@@ -11,3 +11,5 @@ streamlit>=1.35.0
 plotly>=5.22.0
 python-dotenv>=1.0.0
 duckdb>=1.0.0
+# Опционально: LLM-режим страницы «Аналитик». Без пакета — rule-based fallback.
+openai>=1.40.0

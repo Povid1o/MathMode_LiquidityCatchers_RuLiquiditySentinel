@@ -4,6 +4,7 @@
 Rule-based fallback работает без LLM API.
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -34,17 +35,19 @@ st.markdown(
 
 active_profile: str = st.session_state.get("lsi_threshold_profile", DEFAULT_THRESHOLD_PROFILE)
 
+llm_available = _is_llm_available()
+
 with st.sidebar:
     st.markdown("### Настройки аналитика")
     use_llm = st.toggle(
         "Использовать LLM API, если доступен",
-        value=False,
-        help="Требует OPENAI_API_KEY в переменных среды",
+        value=llm_available,
+        help="Требует OPENAI_API_KEY в переменных среды или в .env",
     )
+    if llm_available:
+        st.caption(f"Модель: **{os.environ.get('OPENAI_MODEL', 'gpt-4o-mini')}**")
     st.caption(f"Пороговый профиль: **{active_profile}**")
     st.caption("Сменить профиль можно на странице «Обзор системы».")
-
-llm_available = _is_llm_available()
 
 if use_llm and not llm_available:
     st.warning(
@@ -53,7 +56,9 @@ if use_llm and not llm_available:
         "Для подключения LLM: `export OPENAI_API_KEY=sk-...`"
     )
 elif use_llm and llm_available:
-    st.success("✅ LLM API подключён (OPENAI_API_KEY найден)")
+    _endpoint = os.environ.get("LLM_BASE_URL", "").strip() or "api.openai.com"
+    _model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+    st.success(f"✅ LLM API подключён — модель `{_model}` через `{_endpoint}`")
 else:
     st.info("ℹ️ Режим rule-based: LLM API не используется.")
 
@@ -206,11 +211,15 @@ with st.expander("📖 Подсказки и ограничения"):
 - Был ли стресс в декабре 2014?
 
 **Как включить LLM API:**
+
+Скопируйте `.env.example` в `.env` и заполните значения (или задайте
+переменные среды напрямую). Подойдёт любой OpenAI-совместимый провайдер:
 ```bash
-export OPENAI_API_KEY=sk-...
-# опционально:
-export OPENAI_MODEL=gpt-4o-mini
+OPENAI_API_KEY=sk-...
+LLM_BASE_URL=https://api.odirouter.ai/v1
+OPENAI_MODEL=grok-4.5
 ```
+Нужен пакет `openai`: `pip install openai`.
 
 **Ограничения:**
 - LLM отвечает только по переданному контексту — без внешних новостей.
