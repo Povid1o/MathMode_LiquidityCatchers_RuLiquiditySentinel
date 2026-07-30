@@ -433,7 +433,9 @@ def build_m2_daily_profile(
         sv = _rolling_sum_daily(short_vol, window).to_numpy()
         bv = _rolling_sum_daily(base_vol, window).to_numpy()
         total = sv + bv
-        share = np.where(total > 0, sv / total, 0.0)
+        # делим только там, где знаменатель положителен: иначе numpy считает
+        # деление на ноль до np.where и сыплет RuntimeWarning на весь лог
+        share = np.divide(sv, total, out=np.zeros_like(sv, dtype=float), where=total > 0)
         out[f"m2_short_share_{tag}"] = np.round(share, 6)
         # term_slope = base_ratespread - short_ratespread (last-known)
         slope = (base_rsp - short_rsp)
@@ -451,13 +453,15 @@ def save_daily_profile(
     csv_path: Path = DAILY_PROFILE_FILE,
     parquet_path: Path = DAILY_PROFILE_PARQUET,
 ) -> None:
-    """Сохраняет дневной term-профиль M2 в CSV и parquet."""
+    """Сохраняет дневной term-профиль M2 в CSV и parquet.
+
+    Ошибку записи parquet НЕ глотаем: honest_feature_builder читает именно
+    parquet, поэтому свежий CSV рядом с устаревшим parquet — это молча
+    неверные фичи M2, а не деградация.
+    """
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     profile.to_csv(csv_path, index=False)
-    try:
-        profile.to_parquet(parquet_path, index=False)
-    except Exception:
-        pass
+    profile.to_parquet(parquet_path, index=False)
 
 
 def main() -> None:

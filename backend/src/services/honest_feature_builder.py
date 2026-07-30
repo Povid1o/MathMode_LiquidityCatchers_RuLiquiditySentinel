@@ -41,6 +41,12 @@ M3_AVAILABLE_AGE = 10
 M2_SHORT_ACTIVE_DAYS = 30
 M2_DAYS_SINCE_SHORT_CAP = 90
 
+# m2_daily_profile заканчивается на дате последнего РЕПО-аукциона, поэтому отрыв
+# от календаря final_ml_dataset (дневная ликвидность ЦБ) в пределах аукционного
+# цикла нормален. Разрыв больше этого порога означает, что профиль не пересобран:
+# left-merge молча подставит константы в M2-фичи вместо реальных значений.
+M2_PROFILE_MAX_GAP_DAYS = 30
+
 # --- whitelist'ы (kind-aware): M4 не входит (overlay) ---
 M1_FEATURES = ["m1_spread_mad_score", "m1_spread_relative_mad_score",
                "m1_reserve_load_mad_score", "m1_ruonia_mad_score", "m1_spread_vol"]
@@ -71,6 +77,27 @@ def _mad_rolling(s: pd.Series, win: int = MAD_ROLLING_WIN) -> pd.Series:
     return ((s - med) / m.clip(lower=MAD_FLOOR)).clip(-MAD_CLIP, MAD_CLIP)
 
 
+def _warn_if_profile_stale(profile_max: pd.Timestamp, calendar_max: pd.Timestamp) -> None:
+    """Кричит в лог, если m2_daily_profile отстал от календаря датасета.
+
+    Не роняем шаг: honest LSI считается по пяти модулям, и блокировать пересчёт
+    целиком из-за одного отставшего M2 хуже, чем посчитать с предупреждением.
+    Но и молчать нельзя — именно молчание сделало 53 наблюдения константными.
+    """
+    if pd.isna(profile_max) or pd.isna(calendar_max):
+        print("ВНИМАНИЕ: не удалось определить даты m2_daily_profile — проверьте артефакт")
+        return
+
+    gap_days = (calendar_max - profile_max).days
+    if gap_days > M2_PROFILE_MAX_GAP_DAYS:
+        print(
+            f"ВНИМАНИЕ: m2_daily_profile отстал на {gap_days} дн. "
+            f"(профиль до {profile_max.date()}, датасет до {calendar_max.date()}). "
+            "M2-фичи honest LSI будут заполнены константами. "
+            "Пересоберите профиль: run_m2_pipeline()"
+        )
+
+
 def build_honest_dataset(final_dataset_path: Path = FINAL_DATASET_FILE) -> pd.DataFrame:
     """Собирает honest_ml_dataset: текущий final + honest-фичи M1/M2/M3/M5."""
     d = pd.read_parquet(final_dataset_path)
@@ -85,6 +112,7 @@ def build_honest_dataset(final_dataset_path: Path = FINAL_DATASET_FILE) -> pd.Da
     prof = pd.read_parquet(DATA_DIR / "m2_daily_profile.parquet") \
         if (DATA_DIR / "m2_daily_profile.parquet").exists() else _read_dated(DATA_DIR / "m2_daily_profile.csv")
     prof["date"] = pd.to_datetime(prof["date"], dayfirst=True, format="mixed", errors="coerce")
+    _warn_if_profile_stale(prof["date"].max(), cal["date"].max())
     d = d.merge(prof[["date", "m2_base_cover_mad", "m2_short_age_days"]], on="date", how="left")
     d["m2_short_active30"] = (d["m2_short_age_days"] <= M2_SHORT_ACTIVE_DAYS).astype(int)
     d["m2_days_since_short"] = np.minimum(d["m2_short_age_days"].fillna(365), M2_DAYS_SINCE_SHORT_CAP)

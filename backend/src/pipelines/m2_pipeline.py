@@ -20,8 +20,10 @@ from backend.src.parsers.repo import save_csv as save_repo_csv
 
 from backend.src.services.m2_dataset_builder import build_m2_dataset
 from backend.src.services.m2_dataset_builder import save_csv as save_m2_dataset_csv
+from backend.src.services.m2_feature_builder import build_m2_daily_profile
 from backend.src.services.m2_feature_builder import build_m2_features
 from backend.src.services.m2_feature_builder import save_csv as save_m2_features_csv
+from backend.src.services.m2_feature_builder import save_daily_profile
 from backend.src.services.m2_feature_builder import save_parquet as save_m2_features_parquet
 
 
@@ -54,8 +56,16 @@ def run_m2_pipeline() -> None:
     save_m2_features_csv(m2_feature_rows)
     save_m2_features_parquet(m2_feature_rows)
 
+    # Дневной term-профиль читает m2_features.csv, поэтому строится строго после
+    # его записи. Без этого шага profile остаётся на дате прошлой ручной сборки,
+    # а honest_feature_builder молча подставляет константы в M2-фичи.
+    print("Собираем дневной term-профиль М2")
+    m2_profile = build_m2_daily_profile()
+    save_daily_profile(m2_profile)
+
     print(f"Готово, строк в датасете М2: {len(m2_rows)}")
     print(f"Готово, строк в признаках М2: {len(m2_feature_rows)}")
+    print(f"Готово, строк в term-профиле М2: {len(m2_profile)}")
 
 
 def main() -> None:

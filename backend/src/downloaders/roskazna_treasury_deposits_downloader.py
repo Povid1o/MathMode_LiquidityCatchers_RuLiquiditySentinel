@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import os
 import ssl
 import sys
 from datetime import date
 from html.parser import HTMLParser
 from pathlib import Path
+from urllib.error import URLError
 from urllib.parse import urljoin, urlparse
 from urllib.request import Request, urlopen
 
@@ -13,7 +15,7 @@ from urllib.request import Request, urlopen
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from backend.src.downloaders.common import CHUNK_SIZE, USER_AGENT, download_file
+from backend.src.downloaders.common import CHUNK_SIZE, USER_AGENT
 
 
 BASE_URL = "https://roskazna.gov.ru"
@@ -28,6 +30,70 @@ LINKS_FILE = PROJECT_ROOT / "data/raw/treasury_funds/roskazna_deposit_links.txt"
 DEFAULT_START_YEAR = 2021
 DEFAULT_MAX_PAGES_PER_YEAR = 80
 ARCHIVE_MARKER = 'id="start-files-list"'
+
+# Сколько страниц подряд может не скачаться, прежде чем бросим текущий год.
+# Одиночный сбой страницы не должен обрывать весь год (раньше был break).
+MAX_CONSECUTIVE_PAGE_FAILURES = 3
+
+# roskazna.gov.ru отдаёт цепочку, подписанную корневым CA Минцифры
+# («Russian Trusted Root CA»). Его нет ни в системном хранилище, ни в certifi,
+# и не будет — поэтому нужен явный PEM-бандл с этим корнем. Путь берётся из
+# переменной среды ROSKAZNA_CA_BUNDLE, иначе из certs/ в корне проекта.
+# Полное отключение проверки (ssl._create_unverified_context) убрано намеренно:
+# источник кормит казначейскую модель, и молчаливое доверие любому сертификату
+# здесь опаснее, чем упавший шаг обновления.
+CA_BUNDLE_ENV_VAR = "ROSKAZNA_CA_BUNDLE"
+DEFAULT_CA_BUNDLE = PROJECT_ROOT / "certs" / "russian_trusted_root_ca.pem"
+
+
+class RoskaznaTlsError(RuntimeError):
+    """TLS-сертификат источника не проверяется: нет доверенного корня или он истёк.
+
+    Отдельный тип нужен, чтобы отличать «весь хост недоступен» (нет смысла
+    перебирать 80 страниц) от разового сбоя на одной странице.
+    """
+
+
+def resolve_ca_bundle() -> Path | None:
+    """Возвращает путь к PEM-бандлу с корневым CA Минцифры, если он есть"""
+    configured = os.environ.get(CA_BUNDLE_ENV_VAR, "").strip()
+    candidate = Path(configured) if configured else DEFAULT_CA_BUNDLE
+    return candidate if candidate.is_file() else None
+
+
+def _build_ssl_context() -> ssl.SSLContext:
+    """Строит SSL-контекст с проверкой сертификата (плюс корень Минцифры)"""
+    bundle = resolve_ca_bundle()
+    if bundle is None:
+        return ssl.create_default_context()
+    return ssl.create_default_context(cafile=str(bundle))
+
+
+def _tls_hint(error: BaseException) -> str:
+    """Переводит ошибку проверки сертификата в понятное действие"""
+    text = str(error)
+    bundle = resolve_ca_bundle()
+
+    if "certificate has expired" in text or "CERTIFICATE_VERIFY_FAILED] certificate has expired" in text:
+        return (
+            "сертификат roskazna.gov.ru истёк. Это сторона источника — дождитесь "
+            "перевыпуска. Обходить проверку нельзя: истёкший сертификат неотличим "
+            "от подменённого."
+        )
+
+    if bundle is None:
+        return (
+            "нет доверенного корневого сертификата. Цепочка roskazna.gov.ru подписана "
+            "корнем «Russian Trusted Root CA» (Минцифры), которого нет в системном "
+            f"хранилище и в certifi. Положите PEM с этим корнем в {DEFAULT_CA_BUNDLE} "
+            f"или укажите путь в {CA_BUNDLE_ENV_VAR}, сверив отпечаток из официального "
+            "источника перед установкой."
+        )
+
+    return (
+        f"бандл {bundle} не проверяет цепочку источника. Убедитесь, что в нём именно "
+        "корень «Russian Trusted Root CA» и что он не истёк."
+    )
 
 
 class _XmlLinkParser(HTMLParser):
@@ -71,28 +137,34 @@ def _page_output_path(year: int, page: int, pages_dir: Path) -> Path:
     return pages_dir / f"{year}_page_{page:02d}.html"
 
 
-def _download_roskazna_file(
-    url: str,
-    output_path: Path,
-    allow_unverified_ssl: bool = False,
-) -> None:
-    """Скачивает файл Росказны с опциональным отключением проверки SSL"""
-    if not allow_unverified_ssl:
-        download_file(url, output_path)
-        return
+def _download_roskazna_file(url: str, output_path: Path) -> None:
+    """Скачивает файл Росказны с обязательной проверкой TLS-сертификата.
 
+    Ошибку проверки поднимаем как RoskaznaTlsError с конкретным действием:
+    иначе она тонет в общем «не удалось скачать» и шаг выглядит просто медленным.
+    """
     output_path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = output_path.with_suffix(output_path.suffix + ".tmp")
     request = Request(url, headers={"User-Agent": USER_AGENT})
-    ssl_context = ssl._create_unverified_context()
 
-    with urlopen(request, timeout=60, context=ssl_context) as response:
-        with temporary_path.open("wb") as file:
-            while True:
-                chunk = response.read(CHUNK_SIZE)
-                if not chunk:
-                    break
-                file.write(chunk)
+    try:
+        with urlopen(request, timeout=60, context=_build_ssl_context()) as response:
+            with temporary_path.open("wb") as file:
+                while True:
+                    chunk = response.read(CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    file.write(chunk)
+    except (ssl.SSLCertVerificationError, ssl.SSLError) as error:
+        temporary_path.unlink(missing_ok=True)
+        raise RoskaznaTlsError(f"{_tls_hint(error)} Исходная ошибка: {error}") from error
+    except URLError as error:
+        temporary_path.unlink(missing_ok=True)
+        if isinstance(error.reason, ssl.SSLError):
+            raise RoskaznaTlsError(
+                f"{_tls_hint(error.reason)} Исходная ошибка: {error.reason}"
+            ) from error
+        raise
 
     temporary_path.replace(output_path)
 
@@ -159,14 +231,23 @@ def download_roskazna_html_pages(
     pages_dir: Path = PAGES_DIR,
     max_pages_per_year: int = DEFAULT_MAX_PAGES_PER_YEAR,
     force: bool = False,
-    allow_unverified_ssl: bool = False,
-) -> list[Path]:
-    """Скачивает HTML-страницы архива Росказны по годам и страницам"""
+) -> tuple[list[Path], int]:
+    """Скачивает HTML-страницы архива Росказны по годам и страницам.
+
+    Возвращает (страницы с XML-ссылками, сколько страниц реально скачано в этом
+    прогоне). Второе число нужно вызывающему, чтобы отличить «источник ответил»
+    от «взяли всё из кеша» — на этой разнице раньше и терялся сбой сети.
+
+    RoskaznaTlsError не перехватываем: если сертификат не проверяется, он не
+    проверится и на остальных 79 страницах.
+    """
     pages_dir.mkdir(parents=True, exist_ok=True)
-    downloaded_pages: list[Path] = []
+    pages_with_links: list[Path] = []
+    fetched_count = 0
 
     for year in years:
         previous_link_sets: set[tuple[str, ...]] = set()
+        consecutive_failures = 0
 
         for page in range(1, max_pages_per_year + 1):
             output_path = _page_output_path(year, page, pages_dir)
@@ -175,16 +256,27 @@ def download_roskazna_html_pages(
                 print(f"HTML-страница Росказны уже есть: {output_path.name}")
             else:
                 try:
-                    _download_roskazna_file(
-                        _page_url(year, page),
-                        output_path,
-                        allow_unverified_ssl=allow_unverified_ssl,
-                    )
+                    _download_roskazna_file(_page_url(year, page), output_path)
                     print(f"Скачана HTML-страница Росказны: {output_path.name}")
+                    fetched_count += 1
+                    consecutive_failures = 0
+                except RoskaznaTlsError:
+                    raise
                 except Exception as error:
+                    consecutive_failures += 1
                     print(f"Не удалось скачать HTML-страницу Росказны: {year}, page={page}")
                     print(f"Причина: {error}")
-                    break
+                    if consecutive_failures >= MAX_CONSECUTIVE_PAGE_FAILURES:
+                        print(
+                            f"Останавливаем {year}: {consecutive_failures} страниц подряд "
+                            "не скачались"
+                        )
+                        break
+                    # разовый сбой страницы не должен обрывать год
+                    continue
+
+            if not output_path.exists():
+                continue
 
             links = tuple(_read_archive_links_from_html(output_path))
             if not links:
@@ -196,14 +288,15 @@ def download_roskazna_html_pages(
                 break
 
             previous_link_sets.add(links)
-            downloaded_pages.append(output_path)
+            pages_with_links.append(output_path)
 
             if _is_last_archive_page(output_path):
                 print(f"Останавливаем {year}: страница {page} последняя в архиве")
                 break
 
-    print(f"Готово HTML-страниц Росказны: {len(set(downloaded_pages))}")
-    return sorted(set(downloaded_pages))
+    print(f"Страниц архива Росказны с XML-ссылками: {len(set(pages_with_links))}")
+    print(f"Из них скачано в этом прогоне: {fetched_count}")
+    return sorted(set(pages_with_links)), fetched_count
 
 
 def collect_roskazna_xml_links(
@@ -238,12 +331,15 @@ def download_roskazna_xml_files(
     links: list[str],
     raw_dir: Path = RAW_DIR,
     force: bool = False,
-    allow_unverified_ssl: bool = False,
-) -> list[Path]:
-    """Скачивает XML-файлы Росказны по списку ссылок"""
+) -> tuple[list[Path], int]:
+    """Скачивает XML-файлы Росказны по списку ссылок.
+
+    Возвращает (локальные файлы по ссылкам, сколько скачано в этом прогоне).
+    """
     raw_dir.mkdir(parents=True, exist_ok=True)
 
     downloaded_files: list[Path] = []
+    fetched_count = 0
     skipped_count = 0
     failed_count = 0
 
@@ -255,11 +351,9 @@ def download_roskazna_xml_files(
             continue
 
         try:
-            _download_roskazna_file(
-                link,
-                output_path,
-                allow_unverified_ssl=allow_unverified_ssl,
-            )
+            _download_roskazna_file(link, output_path)
+        except RoskaznaTlsError:
+            raise
         except Exception as error:
             failed_count += 1
             print(f"Не удалось скачать XML Росказны: {link}")
@@ -267,13 +361,14 @@ def download_roskazna_xml_files(
             continue
 
         downloaded_files.append(output_path)
+        fetched_count += 1
 
     print(f"Найдено XML-ссылок Росказны: {len(links)}")
     print(f"Пропущено уже скачанных XML: {skipped_count}")
     print(f"Не скачано XML из-за ошибок: {failed_count}")
-    print(f"Готово XML-файлов Росказны: {len(downloaded_files)}")
+    print(f"Скачано новых XML в этом прогоне: {fetched_count}")
 
-    return sorted(set(downloaded_files))
+    return sorted(set(downloaded_files)), fetched_count
 
 
 def _local_xml_files(raw_dir: Path = RAW_DIR) -> list[Path]:
@@ -286,24 +381,25 @@ def _local_xml_files(raw_dir: Path = RAW_DIR) -> list[Path]:
     )
 
 
-def _download_pages_by_year(
-    years: list[int],
-    *,
-    allow_unverified_ssl: bool,
-) -> None:
-    """Качает HTML-архив: прошлые годы из кеша (force=False), текущий год — заново."""
+def _download_pages_by_year(years: list[int]) -> tuple[int, bool]:
+    """Качает HTML-архив: прошлые годы из кеша (force=False), текущий год — заново.
+
+    Возвращает (скачано страниц текущего года, запрашивался ли текущий год).
+    Прошлые годы намеренно не влияют на результат: они и должны браться из кеша.
+    """
     today_year = date.today().year
     past_years = [year for year in years if year < today_year]
     current_years = [year for year in years if year >= today_year]
+
     if past_years:
-        download_roskazna_html_pages(
-            years=past_years, force=False, allow_unverified_ssl=allow_unverified_ssl
-        )
-    if current_years:
-        # текущий год перекачиваем, чтобы увидеть свежие депозиты
-        download_roskazna_html_pages(
-            years=current_years, force=True, allow_unverified_ssl=allow_unverified_ssl
-        )
+        download_roskazna_html_pages(years=past_years, force=False)
+
+    if not current_years:
+        return 0, False
+
+    # текущий год перекачиваем, чтобы увидеть свежие депозиты
+    _, fetched = download_roskazna_html_pages(years=current_years, force=True)
+    return fetched, True
 
 
 def prepare_roskazna_treasury_deposits(
@@ -311,32 +407,32 @@ def prepare_roskazna_treasury_deposits(
     *,
     update_pages: bool = True,
     years: list[int] | None = None,
-    allow_unverified_ssl: bool = False,
 ) -> list[Path]:
     """Готовит raw-файлы Росказны для пайплайна.
 
-    В отличие от старой версии, при необходимости сам **скачивает HTML-архив**
-    (как CLI `main`), а не полагается на ранее закешированные страницы/ссылки.
-    Если по сети ничего не пришло, пробует ещё раз с отключённой проверкой SSL
-    (у roskazna.gov.ru исторически бывают проблемы с цепочкой сертификатов).
+    Сам скачивает HTML-архив, а не полагается на ранее закешированные страницы.
+
+    Успех определяется результатом ТЕКУЩЕГО прогона, а не наличием файлов на
+    диске. Раньше проверялось `not any(PAGES_DIR.glob("*.html"))`, поэтому при
+    непустом кеше сетевой сбой не отличался от нормального обновления: шаг M5
+    отчитывался «ok» на данных двухмесячной давности. Теперь при живом кеше и
+    мёртвой сети шаг падает с понятной причиной.
     """
     if years is None:
         years = list(range(DEFAULT_START_YEAR, date.today().year + 1))
 
     if update_pages:
-        _download_pages_by_year(years, allow_unverified_ssl=allow_unverified_ssl)
-        # сеть/SSL не дали ни одной страницы — повторяем без проверки сертификата
-        if not any(PAGES_DIR.glob("*.html")) and not allow_unverified_ssl:
-            print("Повторная попытка скачивания страниц Росказны без проверки SSL")
-            _download_pages_by_year(years, allow_unverified_ssl=True)
+        fetched_pages, current_year_requested = _download_pages_by_year(years)
+        if current_year_requested and fetched_pages == 0:
+            raise RuntimeError(
+                "Источник Росказны не отдал ни одной страницы архива за текущий год. "
+                f"На диске могут лежать старые страницы — они НЕ считаются успехом. "
+                f"Проверьте доступ к {SOURCE_URL}"
+            )
 
     links = collect_roskazna_xml_links()
     if links:
-        download_roskazna_xml_files(links, raw_dir, allow_unverified_ssl=allow_unverified_ssl)
-        # XML не скачались (вероятно SSL) — повторяем без проверки сертификата
-        if not _local_xml_files(raw_dir) and not allow_unverified_ssl:
-            print("Повторная попытка скачивания XML Росказны без проверки SSL")
-            download_roskazna_xml_files(links, raw_dir, allow_unverified_ssl=True)
+        download_roskazna_xml_files(links, raw_dir)
 
     files = _local_xml_files(raw_dir)
 
@@ -398,31 +494,21 @@ def main() -> None:
         action="store_true",
         help="Перекачивать XML-файлы, даже если они уже есть",
     )
-    argument_parser.add_argument(
-        "--allow-unverified-ssl",
-        action="store_true",
-        help="Отключить проверку SSL-сертификата для Росказны",
-    )
     args = argument_parser.parse_args()
 
-    if args.allow_unverified_ssl:
-        print("Внимание: проверка SSL-сертификата Росказны отключена")
+    bundle = resolve_ca_bundle()
+    print(f"CA-бандл для Росказны: {bundle if bundle else 'не задан (системное хранилище)'}")
 
     if not args.no_update_pages:
         download_roskazna_html_pages(
             years=_parse_years(args.years),
             max_pages_per_year=args.max_pages,
             force=args.force_pages,
-            allow_unverified_ssl=args.allow_unverified_ssl,
         )
 
     links = collect_roskazna_xml_links()
     if links:
-        download_roskazna_xml_files(
-            links,
-            force=args.force_xml,
-            allow_unverified_ssl=args.allow_unverified_ssl,
-        )
+        download_roskazna_xml_files(links, force=args.force_xml)
 
     files = _local_xml_files()
     if not files:

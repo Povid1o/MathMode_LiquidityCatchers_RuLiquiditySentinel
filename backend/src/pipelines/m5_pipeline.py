@@ -32,7 +32,13 @@ from backend.src.services.m5_feature_builder import save_parquet as save_m5_feat
 
 
 def run_m5_pipeline() -> None:
-    """Запускает полный пайплайн подготовки данных М5"""
+    """Запускает полный пайплайн подготовки данных М5.
+
+    Сбой Росказны не отменяет обновление данных ЦБ: сначала доводим до конца всё,
+    что скачалось, и только потом поднимаем ошибку источника. Так свежая дневная
+    ликвидность попадает в processed, а шаг всё равно становится красным —
+    вместо прежнего «ok» на устаревшем кеше Росказны.
+    """
     print("Скачиваем бюджетные средства на счетах банков с сайта ЦБ")
     download_cbr_budget_funds()
 
@@ -40,7 +46,14 @@ def run_m5_pipeline() -> None:
     download_cbr_liquidity()
 
     print("Проверяем XML-файлы Росказны по депозитам ЕКС")
-    roskazna_files = prepare_roskazna_treasury_deposits()
+    roskazna_files: list = []
+    roskazna_error: Exception | None = None
+    try:
+        roskazna_files = prepare_roskazna_treasury_deposits()
+    except Exception as error:  # noqa: BLE001 — источник изолируем, но не глотаем
+        roskazna_error = error
+        print(f"ОШИБКА источника Росказны: {error}")
+        print("Продолжаем на ранее сохранённых XML; шаг будет помечен ошибкой в конце")
 
     print("Обрабатываем бюджетные средства на счетах банков")
     budget_rows = parse_cbr_budget_funds()
@@ -69,6 +82,12 @@ def run_m5_pipeline() -> None:
     print(f"Готово, строк по депозитам Росказны: {len(roskazna_rows)}")
     print(f"Готово, строк в датасете М5: {len(m5_rows)}")
     print(f"Готово, строк в признаках М5: {len(m5_feature_rows)}")
+
+    if roskazna_error is not None:
+        raise RuntimeError(
+            "Данные ЦБ обновлены, но депозиты ЕКС Росказны остались на прежней дате: "
+            f"{roskazna_error}"
+        ) from roskazna_error
 
 
 def main() -> None:

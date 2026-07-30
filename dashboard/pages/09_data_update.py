@@ -14,6 +14,7 @@ import streamlit as st
 
 from backend.src.db import warehouse as wh
 from backend.src.pipelines.refresh_pipeline import build_steps, _run_step
+from backend.src.services import data_freshness as fresh
 
 st.set_page_config(page_title="Данные — обновление", layout="wide")
 st.title("⚙️ Данные — обновление и витрина")
@@ -41,31 +42,69 @@ else:
             return None
         return (today - pd.Timestamp(str(d))).days
 
+    _STATUS_LABELS = {
+        fresh.STATUS_OK: "🟢 в норме",
+        fresh.STATUS_WARN: "🟡 задержка",
+        fresh.STATUS_STALE: "🔴 застой",
+        fresh.STATUS_UNKNOWN: "⚪ н/д",
+    }
+
     view = mani.copy()
     view["lag_days"] = view["date_max"].map(_age)
+    # Статус считаем относительно графика публикации источника, а не календаря:
+    # у месячных рядов лаг 50–70 дней штатный, у дневных 5 дней — уже сбой.
+    view["status"] = [
+        _STATUS_LABELS[fresh.classify(name, lag)]
+        for name, lag in zip(view["table_name"], view["lag_days"])
+    ]
+    view["expected"] = view["table_name"].map(fresh.expected_lag)
+    view["overdue"] = [
+        fresh.overdue_days(name, lag)
+        for name, lag in zip(view["table_name"], view["lag_days"])
+    ]
+    view["cadence"] = view["table_name"].map(fresh.cadence)
+
     view = view.rename(columns={
         "table_name": "Таблица", "row_count": "Строк",
         "date_min": "Дата с", "date_max": "Дата по",
-        "lag_days": "Отставание, дн.", "updated_at": "Обновлено",
+        "lag_days": "Отставание, дн.", "expected": "Норма, дн.",
+        "overdue": "Просрочка, дн.", "status": "Статус",
+        "cadence": "График источника", "updated_at": "Обновлено",
     })
-    show_cols = ["Таблица", "Строк", "Дата с", "Дата по", "Отставание, дн.", "Обновлено"]
+    show_cols = [
+        "Таблица", "Статус", "Отставание, дн.", "Норма, дн.", "Просрочка, дн.",
+        "Строк", "Дата с", "Дата по", "График источника", "Обновлено",
+    ]
 
-    def _hl_lag(val: object) -> str:
-        if val is None or (isinstance(val, float) and pd.isna(val)):
-            return ""
-        days = int(val)
-        if days > 30:
+    def _hl_status(val: object) -> str:
+        text = str(val)
+        if "застой" in text:
             return "color: #d62728"
-        if days > 7:
+        if "задержка" in text:
             return "color: #bcbd22"
-        return "color: #2ca02c"
+        if "норме" in text:
+            return "color: #2ca02c"
+        return "color: #7f7f7f"
 
     st.dataframe(
-        view[show_cols].style.map(_hl_lag, subset=["Отставание, дн."]),
+        view[show_cols].style.map(_hl_status, subset=["Статус"]),
         use_container_width=True, hide_index=True,
     )
+
+    stale = view[view["Статус"].str.contains("застой")]
+    if not stale.empty:
+        names = ", ".join(f"`{t}`" for t in stale["Таблица"])
+        st.error(
+            f"Застой сверх графика публикации: {names}. "
+            "Проверьте логи соответствующего шага обновления — источник мог не ответить."
+        )
+
     st.caption(
-        "Отставание = разница между сегодняшней датой и последней датой в таблице. "
+        "**Отставание** = сегодня минус последняя дата в таблице. "
+        "**Норма** = ожидаемый лаг публикации источника: у дневных рядов это 3 дня, "
+        "у месячных рядов ЦБ — 60–70 дней, у накопительного файла Минфина по ОФЗ — 35. "
+        "Статус считается относительно нормы, поэтому месячные ряды больше не горят "
+        "красным при штатной задержке, а реальный застой дневного источника виден сразу. "
         "Сводные `final_ml_dataset` / `honest_ml_dataset` ограничены самым «коротким» "
         "ежедневным источником на дату стыковки."
     )
