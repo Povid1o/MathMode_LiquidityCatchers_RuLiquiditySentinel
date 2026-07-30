@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import hmac
+import http.client
 import os
 import ssl
 import sys
@@ -16,6 +19,15 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from backend.src.downloaders.common import CHUNK_SIZE, USER_AGENT
+
+# Настройки TLS читаются из окружения, поэтому подхватываем .env — иначе кнопка
+# «Полное обновление» в дашборде не увидит переменные, заданные в файле.
+try:
+    from dotenv import load_dotenv as _load_dotenv
+
+    _load_dotenv(dotenv_path=PROJECT_ROOT / ".env", override=False)
+except ImportError:
+    pass
 
 
 BASE_URL = "https://roskazna.gov.ru"
@@ -45,6 +57,23 @@ MAX_CONSECUTIVE_PAGE_FAILURES = 3
 CA_BUNDLE_ENV_VAR = "ROSKAZNA_CA_BUNDLE"
 DEFAULT_CA_BUNDLE = PROJECT_ROOT / "certs" / "russian_trusted_root_ca.pem"
 
+# Аварийный режим на случай, когда штатная проверка невозможна (у Росказны истёк
+# сертификат, а корня Минцифры в хранилище нет), но данные нужны сейчас.
+# В переменную кладётся SHA-256 отпечаток ожидаемого сертификата сервера. Цепочка
+# доверия при этом не проверяется, но подмена на ЛЮБОЙ другой сертификат отбивается —
+# в отличие от полного отключения проверки, где принимается что угодно.
+# Осознанный компромисс: пиннинг не защищает от использования скомпрометированного
+# и уже отозванного сертификата, срок действия тоже не проверяется.
+# Отпечаток снимается так (сверьте значение по независимому каналу):
+#   echo | openssl s_client -connect roskazna.gov.ru:443 -servername roskazna.gov.ru \
+#     | openssl x509 -outform DER | openssl dgst -sha256
+PINNED_CERT_ENV_VAR = "ROSKAZNA_PINNED_CERT_SHA256"
+
+# Сколько раз идти по редиректу внутри того же хоста при пиннинге
+MAX_PINNED_REDIRECTS = 3
+
+_pin_notice_shown = False
+
 
 class RoskaznaTlsError(RuntimeError):
     """TLS-сертификат источника не проверяется: нет доверенного корня или он истёк.
@@ -59,6 +88,113 @@ def resolve_ca_bundle() -> Path | None:
     configured = os.environ.get(CA_BUNDLE_ENV_VAR, "").strip()
     candidate = Path(configured) if configured else DEFAULT_CA_BUNDLE
     return candidate if candidate.is_file() else None
+
+
+def resolve_pinned_fingerprint() -> str | None:
+    """Возвращает нормализованный SHA-256 отпечаток из переменной среды, если задан"""
+    raw = os.environ.get(PINNED_CERT_ENV_VAR, "").strip()
+    if not raw:
+        return None
+
+    normalized = raw.replace(":", "").replace(" ", "").lower()
+    if len(normalized) != 64 or any(char not in "0123456789abcdef" for char in normalized):
+        raise RoskaznaTlsError(
+            f"{PINNED_CERT_ENV_VAR} должен содержать SHA-256 отпечаток из 64 hex-символов, "
+            f"получено: {raw!r}"
+        )
+    return normalized
+
+
+def _announce_pinned_mode(fingerprint: str) -> None:
+    """Один раз за процесс сообщает, что работаем в режиме пиннинга"""
+    global _pin_notice_shown
+    if _pin_notice_shown:
+        return
+    _pin_notice_shown = True
+    print(
+        "Росказна: цепочка доверия НЕ проверяется, сертификат сверяется по отпечатку "
+        f"{fingerprint[:16]}… (режим {PINNED_CERT_ENV_VAR}). "
+        "Срок действия и отзыв не проверяются — снимите переменную, как только "
+        "источник перевыпустит сертификат."
+    )
+
+
+def _download_with_pinned_certificate(
+    url: str,
+    output_path: Path,
+    fingerprint: str,
+    *,
+    redirects_left: int = MAX_PINNED_REDIRECTS,
+) -> None:
+    """Качает файл, сверяя сертификат сервера с ожидаемым отпечатком.
+
+    Отпечаток проверяется на том же соединении, по которому идёт загрузка,
+    поэтому подменить сертификат между проверкой и скачиванием нельзя.
+    """
+    _announce_pinned_mode(fingerprint)
+
+    parsed = urlparse(url)
+    if parsed.hostname is None:
+        raise ValueError(f"Не удалось определить хост из ссылки: {url}")
+
+    context = ssl._create_unverified_context()  # проверка заменена сверкой отпечатка
+    connection = http.client.HTTPSConnection(
+        parsed.hostname, parsed.port or 443, timeout=60, context=context
+    )
+
+    try:
+        connection.connect()
+        peer_der = connection.sock.getpeercert(binary_form=True)
+        actual = hashlib.sha256(peer_der).hexdigest()
+        if not hmac.compare_digest(actual, fingerprint):
+            raise RoskaznaTlsError(
+                "Отпечаток сертификата Росказны не совпал с закреплённым. "
+                f"Ожидался {fingerprint}, получен {actual}. "
+                "Либо источник перевыпустил сертификат — тогда сверьте новый отпечаток "
+                f"и обновите {PINNED_CERT_ENV_VAR}, либо соединение перехвачено. "
+                "Загрузка остановлена."
+            )
+
+        target = parsed.path or "/"
+        if parsed.query:
+            target = f"{target}?{parsed.query}"
+        connection.request("GET", target, headers={"User-Agent": USER_AGENT})
+        response = connection.getresponse()
+
+        if response.status in {301, 302, 303, 307, 308}:
+            location = response.getheader("Location")
+            if not location or redirects_left <= 0:
+                raise RuntimeError(f"Редирект без цели или их слишком много: {url}")
+            next_url = urljoin(url, location)
+            if urlparse(next_url).hostname != parsed.hostname:
+                raise RoskaznaTlsError(
+                    f"Редирект уводит с {parsed.hostname} на "
+                    f"{urlparse(next_url).hostname}: при пиннинге это не разрешено"
+                )
+            connection.close()
+            _download_with_pinned_certificate(
+                next_url, output_path, fingerprint, redirects_left=redirects_left - 1
+            )
+            return
+
+        if response.status != 200:
+            raise RuntimeError(f"HTTP {response.status} по ссылке {url}")
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = output_path.with_suffix(output_path.suffix + ".tmp")
+        try:
+            with temporary_path.open("wb") as file:
+                while True:
+                    chunk = response.read(CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    file.write(chunk)
+            temporary_path.replace(output_path)
+        except BaseException:
+            temporary_path.unlink(missing_ok=True)
+            raise
+    finally:
+        connection.close()
 
 
 def _build_ssl_context() -> ssl.SSLContext:
@@ -138,11 +274,18 @@ def _page_output_path(year: int, page: int, pages_dir: Path) -> Path:
 
 
 def _download_roskazna_file(url: str, output_path: Path) -> None:
-    """Скачивает файл Росказны с обязательной проверкой TLS-сертификата.
+    """Скачивает файл Росказны с проверкой TLS-сертификата.
 
-    Ошибку проверки поднимаем как RoskaznaTlsError с конкретным действием:
-    иначе она тонет в общем «не удалось скачать» и шаг выглядит просто медленным.
+    Если задан ROSKAZNA_PINNED_CERT_SHA256, вместо проверки цепочки сертификат
+    сверяется с закреплённым отпечатком (аварийный режим, см. certs/README.md).
+    Иначе цепочка проверяется штатно, а ошибку поднимаем как RoskaznaTlsError
+    с конкретным действием: иначе она тонет в общем «не удалось скачать».
     """
+    pinned = resolve_pinned_fingerprint()
+    if pinned is not None:
+        _download_with_pinned_certificate(url, output_path, pinned)
+        return
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = output_path.with_suffix(output_path.suffix + ".tmp")
     request = Request(url, headers={"User-Agent": USER_AGENT})
@@ -498,6 +641,8 @@ def main() -> None:
 
     bundle = resolve_ca_bundle()
     print(f"CA-бандл для Росказны: {bundle if bundle else 'не задан (системное хранилище)'}")
+    if resolve_pinned_fingerprint() is not None:
+        print(f"Режим пиннинга включён через {PINNED_CERT_ENV_VAR}")
 
     if not args.no_update_pages:
         download_roskazna_html_pages(

@@ -25,16 +25,25 @@ try:
 except ImportError:
     pass
 
-from backend.src.services.lsi_thresholds import DEFAULT_THRESHOLD_PROFILE
 from backend.src.services.lsi_thresholds import get_lsi_status
 from backend.src.services.lsi_thresholds import get_threshold_profile
+
+# Профиль по умолчанию — honest, как на остальных страницах дашборда.
+# Раньше здесь стоял backtest_sensitive (30/60) из lsi_thresholds, и вместе с
+# чтением honest-скоров это давало двойное расхождение: и значения, и пороги
+# отличались от того, что показывает «Обзор системы».
+DEFAULT_THRESHOLD_PROFILE = "honest"
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DATA_DIR = PROJECT_ROOT / "data" / "processed"
 
 _FINAL_ML_PATH = DATA_DIR / "final_ml_dataset.parquet"
-_LSI_SCORES_PATH = DATA_DIR / "lsi_scores.parquet"
+# Читаем honest-скоры: это индекс, который показывает весь остальной дашборд.
+# Прежний lsi_scores.parquet — до-honest индекс, он перестал пересчитываться, и
+# аналитик отвечал по устаревшим значениям, расходившимся с тем, что видит
+# пользователь на странице «Обзор системы».
+_LSI_SCORES_PATH = DATA_DIR / "honest_lsi_scores.parquet"
 _BACKTEST_PATH = DATA_DIR / "lsi_backtest_scores.parquet"
 _THRESHOLD_METRICS_PATH = DATA_DIR / "lsi_threshold_metrics.parquet"
 
@@ -45,6 +54,9 @@ _MODULE_LABELS: dict[str, str] = {
     "M3": "M3 (ОФЗ-аукционы)",
     "M4": "M4 (Налоговое давление)",
     "M5": "M5 (Ликвидность / Казначейство)",
+    # honest-индекс разделяет событийные блоки M3/M5 на отдельные вклады
+    "M3X": "M3X (ОФЗ, событийные фичи)",
+    "M5X": "M5X (Ликвидность ЦБ, honest-фичи)",
 }
 
 # Короткие пояснения к статусам для rule-based текста
@@ -67,6 +79,24 @@ def _load_parquet_safe(path: Path) -> pd.DataFrame:
         return pd.read_parquet(path)
     except Exception:
         return pd.DataFrame()
+
+
+def _extract_contributions(row: pd.Series, prefix: str) -> dict[str, float]:
+    """Собирает вклады модулей, не завязываясь на фиксированный список имён.
+
+    В honest-скорах набор модулей отличается от прежнего (m1, m2, m3, m3x, m5x
+    вместо m1..m5), поэтому перечисление вручную молча теряло часть вкладов.
+    """
+    marker = f"{prefix}_contrib_"
+    contributions: dict[str, float] = {}
+    for column in row.index:
+        if not str(column).startswith(marker):
+            continue
+        if pd.isna(row.get(column)):
+            continue
+        module = str(column)[len(marker):].upper()
+        contributions[module] = float(row[column])
+    return contributions
 
 
 def load_context(threshold_profile: str = DEFAULT_THRESHOLD_PROFILE) -> dict[str, Any]:
@@ -125,21 +155,13 @@ def load_context(threshold_profile: str = DEFAULT_THRESHOLD_PROFILE) -> dict[str
             local_val = float(lsi_latest["lsi_local"])
             context["lsi_local"] = local_val
             context["local_status"] = get_lsi_status(local_val, profile=threshold_profile)
-            context["local_contribs"] = {
-                m.upper(): float(lsi_latest[f"lsi_local_contrib_{m}"])
-                for m in ["m1", "m2", "m3", "m4", "m5"]
-                if f"lsi_local_contrib_{m}" in lsi_latest.index and pd.notna(lsi_latest.get(f"lsi_local_contrib_{m}"))
-            }
+            context["local_contribs"] = _extract_contributions(lsi_latest, "lsi_local")
 
         if "lsi_global" in lsi_latest and pd.notna(lsi_latest.get("lsi_global")):
             global_val = float(lsi_latest["lsi_global"])
             context["lsi_global"] = global_val
             context["global_status"] = get_lsi_status(global_val, profile=threshold_profile)
-            context["global_contribs"] = {
-                m.upper(): float(lsi_latest[f"lsi_global_contrib_{m}"])
-                for m in ["m1", "m2", "m3", "m4", "m5"]
-                if f"lsi_global_contrib_{m}" in lsi_latest.index and pd.notna(lsi_latest.get(f"lsi_global_contrib_{m}"))
-            }
+            context["global_contribs"] = _extract_contributions(lsi_latest, "lsi_global")
     else:
         context["errors"].append("LSI-скоры не найдены")
 

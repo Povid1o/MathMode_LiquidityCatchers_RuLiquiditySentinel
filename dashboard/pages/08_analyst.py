@@ -1,7 +1,8 @@
 """Страница дашборда: Аналитик.
 
-Автокомментарий и вопрос-ответ по данным LSI.
-Rule-based fallback работает без LLM API.
+Агентный чат по данным LSI: модель сама читает витрину через инструменты, помнит
+предыдущие ходы диалога и ссылается на источники чисел.
+Rule-based fallback работает без LLM API — dashboard остаётся рабочим всегда.
 """
 
 import os
@@ -12,128 +13,114 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import streamlit as st
 
-from backend.src.services.lsi_thresholds import DEFAULT_THRESHOLD_PROFILE
+from backend.src.services import analyst_agent
 from backend.src.services.lsi_commentary_service import (
-    load_context,
+    DEFAULT_THRESHOLD_PROFILE,
     build_rule_based_commentary,
     generate_llm_commentary,
-    answer_question,
-    _is_llm_available,
+    load_context,
 )
 
 st.set_page_config(page_title="Аналитик — LSI", layout="wide")
 
 st.title("🧠 Аналитик")
 st.markdown(
-    "Автокомментарий и вопрос-ответ по данным LSI. "
-    "Без API используется rule-based fallback — dashboard работает в любом случае."
+    "Чат по данным LSI: аналитик сам читает витрину через инструменты, помнит контекст "
+    "диалога и ссылается на источники. Без API работает rule-based режим."
 )
 
 # ---------------------------------------------------------------------------
-# Активный профиль порогов
+# Активный профиль порогов и доступность агента
 # ---------------------------------------------------------------------------
 
 active_profile: str = st.session_state.get("lsi_threshold_profile", DEFAULT_THRESHOLD_PROFILE)
-
-llm_available = _is_llm_available()
+agent_available = analyst_agent.is_available()
 
 with st.sidebar:
     st.markdown("### Настройки аналитика")
-    use_llm = st.toggle(
-        "Использовать LLM API, если доступен",
-        value=llm_available,
-        help="Требует OPENAI_API_KEY в переменных среды или в .env",
+    use_agent = st.toggle(
+        "Агентный режим (инструменты + память)",
+        value=agent_available,
+        disabled=not agent_available,
+        help="Требует OPENAI_API_KEY. Модель сама читает данные через инструменты.",
     )
-    if llm_available:
+    show_trace = st.toggle(
+        "Показывать вызовы инструментов",
+        value=True,
+        help="Видно, какие данные аналитик поднял для ответа",
+    )
+    if agent_available:
         st.caption(f"Модель: **{os.environ.get('OPENAI_MODEL', 'gpt-4o-mini')}**")
     st.caption(f"Пороговый профиль: **{active_profile}**")
     st.caption("Сменить профиль можно на странице «Обзор системы».")
 
-if use_llm and not llm_available:
+if not agent_available:
     st.warning(
-        "⚠️ LLM API запрошен, но OPENAI_API_KEY не задан. "
-        "Будет использован rule-based комментарий. "
-        "Для подключения LLM: `export OPENAI_API_KEY=sk-...`"
+        "⚠️ Агентный режим недоступен: не задан `OPENAI_API_KEY` или не установлен пакет "
+        "`openai`. Работает rule-based комментарий."
     )
-elif use_llm and llm_available:
+elif use_agent:
     _endpoint = os.environ.get("LLM_BASE_URL", "").strip() or "api.openai.com"
-    _model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
-    st.success(f"✅ LLM API подключён — модель `{_model}` через `{_endpoint}`")
+    st.success(
+        f"✅ Агент подключён — `{os.environ.get('OPENAI_MODEL')}` через `{_endpoint}`, "
+        f"{len(analyst_agent.TOOL_SCHEMAS)} инструментов"
+    )
 else:
-    st.info("ℹ️ Режим rule-based: LLM API не используется.")
+    st.info("ℹ️ Агентный режим выключен: используется rule-based комментарий.")
 
 st.markdown("---")
 
 # ---------------------------------------------------------------------------
-# Загрузка контекста
+# Автокомментарий
 # ---------------------------------------------------------------------------
+
+st.subheader("📋 Автокомментарий")
+
 
 @st.cache_data(ttl=300, show_spinner=False)
 def _get_context(profile: str) -> dict:
     return load_context(threshold_profile=profile)
 
 
-with st.spinner("Загрузка данных LSI..."):
-    try:
-        ctx = _get_context(active_profile)
-        context_ok = True
-    except Exception as exc:
-        st.error(f"Ошибка загрузки данных: {exc}")
-        context_ok = False
-
-# ---------------------------------------------------------------------------
-# Блок автокомментария
-# ---------------------------------------------------------------------------
-
-st.subheader("📋 Автокомментарий")
+try:
+    ctx = _get_context(active_profile)
+    context_ok = True
+except Exception as exc:
+    st.error(f"Ошибка загрузки данных: {exc}")
+    context_ok = False
 
 if context_ok:
-    data_date = ctx.get("data_date", "н/д")
-    lsi_local = ctx.get("lsi_local")
-    lsi_global = ctx.get("lsi_global")
-
-    # KPI-плашки
     cols = st.columns(3)
     with cols[0]:
-        st.metric("Дата данных", data_date)
-    with cols[1]:
-        if lsi_local is not None:
-            local_status = ctx.get("local_status", "")
-            color_map = {
-                "ЗЕЛЕНЫЙ": "normal",
-                "ЖЕЛТЫЙ": "off",
-                "КРАСНЫЙ": "inverse",
-            }
-            delta_color = next(
-                (v for k, v in color_map.items() if k in local_status), "off"
-            )
-            st.metric("LSI Local", f"{lsi_local:.2f}", delta=local_status, delta_color=delta_color)
-        else:
-            st.metric("LSI Local", "н/д")
-    with cols[2]:
-        if lsi_global is not None:
-            global_status = ctx.get("global_status", "")
-            delta_color = next(
-                (v for k, v in color_map.items() if k in global_status), "off"
-            )
-            st.metric("LSI Global", f"{lsi_global:.2f}", delta=global_status, delta_color=delta_color)
-        else:
-            st.metric("LSI Global", "н/д")
+        st.metric("Дата данных", ctx.get("data_date", "н/д"))
 
-    st.markdown("")
+    _color_map = {"ЗЕЛЕНЫЙ": "normal", "ЖЕЛТЫЙ": "off", "КРАСНЫЙ": "inverse"}
+    for column, key, label in (
+        (cols[1], "lsi_local", "LSI Local"),
+        (cols[2], "lsi_global", "LSI Global"),
+    ):
+        with column:
+            value = ctx.get(key)
+            if value is None:
+                st.metric(label, "н/д")
+                continue
+            status = ctx.get("local_status" if key == "lsi_local" else "global_status", "")
+            delta_color = next((v for k, v in _color_map.items() if k in status), "off")
+            st.metric(label, f"{value:.2f}", delta=status, delta_color=delta_color)
 
     if st.button("🔄 Сгенерировать автокомментарий", type="primary"):
         with st.spinner("Генерация комментария..."):
-            if use_llm:
+            if use_agent:
                 commentary = generate_llm_commentary(ctx)
+                mode = "LLM"
             else:
                 commentary = build_rule_based_commentary(ctx)
+                mode = "Rule-based"
         st.session_state["last_commentary"] = commentary
-        st.session_state["last_commentary_mode"] = "LLM" if (use_llm and llm_available) else "Rule-based"
+        st.session_state["last_commentary_mode"] = mode
 
     if "last_commentary" in st.session_state:
-        mode = st.session_state.get("last_commentary_mode", "Rule-based")
-        st.caption(f"Режим: {mode}")
+        st.caption(f"Режим: {st.session_state.get('last_commentary_mode', 'Rule-based')}")
         st.text_area(
             "Комментарий",
             value=st.session_state["last_commentary"],
@@ -143,56 +130,102 @@ if context_ok:
     else:
         st.caption("Нажмите кнопку выше, чтобы сгенерировать комментарий.")
 else:
-    st.warning("Не удалось загрузить контекст. Проверьте наличие файлов в data/processed/")
+    st.warning("Не удалось загрузить контекст. Проверьте файлы в data/processed/")
 
 st.markdown("---")
 
 # ---------------------------------------------------------------------------
-# Чат: вопрос-ответ
+# Агентный чат
 # ---------------------------------------------------------------------------
 
-st.subheader("💬 Вопрос-ответ по данным")
+st.subheader("💬 Диалог по данным")
 st.caption(
-    "Задайте вопрос о состоянии ликвидности, конкретном периоде или значении LSI. "
-    "Примеры: «Что было в феврале 2022?», «Какой текущий статус?», «Есть ли налоговое давление?»"
+    "Аналитик помнит контекст беседы — можно уточнять: «а почему?», «сравни с прошлым годом», "
+    "«покажи фичи этого модуля»."
 )
 
-# инициализируем историю
-if "analyst_chat_history" not in st.session_state:
-    st.session_state["analyst_chat_history"] = []
+# api_messages — история в формате OpenAI (включая вызовы инструментов), уходит в модель.
+# display_messages — только то, что показываем пользователю.
+st.session_state.setdefault("analyst_api_messages", [])
+st.session_state.setdefault("analyst_display_messages", [])
 
-# показываем историю
-for msg in st.session_state["analyst_chat_history"]:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
+for entry in st.session_state["analyst_display_messages"]:
+    with st.chat_message(entry["role"]):
+        st.markdown(entry["content"])
+        for record in entry.get("trace", []):
+            icon = "✅" if record["ok"] else "⚠️"
+            with st.expander(f"{icon} {record['name']}", expanded=False):
+                st.code(record["arguments"], language="json")
+                st.caption(record["summary"])
 
-# поле ввода
-if question := st.chat_input("Введите вопрос по данным LSI..."):
-    st.session_state["analyst_chat_history"].append({"role": "user", "content": question})
+if question := st.chat_input("Спросите о состоянии ликвидности, периоде, модуле или фичах..."):
+    st.session_state["analyst_display_messages"].append({"role": "user", "content": question})
     with st.chat_message("user"):
         st.markdown(question)
 
     with st.chat_message("assistant"):
-        with st.spinner("Анализирую..."):
-            try:
-                response = answer_question(
-                    question,
-                    threshold_profile=active_profile,
-                    use_llm=use_llm,
-                )
-            except Exception as exc:
-                response = (
-                    f"Произошла ошибка при обработке вопроса: {exc}\n\n"
-                    "Попробуйте переформулировать вопрос или обновить страницу."
-                )
-        st.markdown(response)
+        if not use_agent:
+            with st.spinner("Считаю rule-based ответ..."):
+                try:
+                    reply = build_rule_based_commentary(load_context(threshold_profile=active_profile))
+                    reply = (
+                        "Агентный режим выключен, поэтому это rule-based сводка, "
+                        f"а не ответ на вопрос.\n\n{reply}"
+                    )
+                except Exception as exc:
+                    reply = f"Не удалось собрать rule-based сводку: {exc}"
+            st.markdown(reply)
+            st.session_state["analyst_display_messages"].append(
+                {"role": "assistant", "content": reply}
+            )
+        else:
+            with st.spinner("Читаю данные и думаю..."):
+                try:
+                    result = analyst_agent.run_turn(
+                        question,
+                        st.session_state["analyst_api_messages"],
+                    )
+                    reply = result.reply
+                    st.session_state["analyst_api_messages"] = result.messages
+                    trace = [
+                        {
+                            "name": record.name,
+                            "arguments": str(record.arguments),
+                            "ok": record.ok,
+                            "summary": record.summary,
+                        }
+                        for record in result.trace
+                    ]
+                    iterations = result.iterations
+                    truncated = result.truncated_history
+                except analyst_agent.AnalystAgentUnavailable as exc:
+                    reply, trace, iterations, truncated = f"Агент недоступен: {exc}", [], 0, False
+                except Exception as exc:
+                    reply = (
+                        f"Ошибка при обработке вопроса: {exc}\n\n"
+                        "Попробуйте переформулировать или обновить страницу."
+                    )
+                    trace, iterations, truncated = [], 0, False
 
-    st.session_state["analyst_chat_history"].append({"role": "assistant", "content": response})
+            st.markdown(reply)
+            for record in trace:
+                icon = "✅" if record["ok"] else "⚠️"
+                with st.expander(f"{icon} {record['name']}", expanded=False):
+                    st.code(record["arguments"], language="json")
+                    st.caption(record["summary"])
+            if iterations:
+                st.caption(f"Обращений к модели: {iterations}, вызовов инструментов: {len(trace)}")
+            if truncated:
+                st.caption("⚠️ Ранние ходы диалога вытеснены из контекста по лимиту размера.")
 
-# кнопка очистки истории
-if st.session_state["analyst_chat_history"]:
+            st.session_state["analyst_display_messages"].append(
+                {"role": "assistant", "content": reply, "trace": trace if show_trace else []}
+            )
+
+if st.session_state["analyst_display_messages"]:
     if st.button("🗑️ Очистить историю чата"):
-        st.session_state["analyst_chat_history"] = []
+        st.session_state["analyst_api_messages"] = []
+        st.session_state["analyst_display_messages"] = []
         st.rerun()
 
 st.markdown("---")
@@ -201,30 +234,29 @@ st.markdown("---")
 # Подсказки
 # ---------------------------------------------------------------------------
 
-with st.expander("📖 Подсказки и ограничения"):
-    st.markdown("""
+with st.expander("📖 Что умеет аналитик и чего не умеет"):
+    st.markdown(f"""
+**Инструменты, доступные аналитику ({len(analyst_agent.TOOL_SCHEMAS)}):**
+- `list_tables` / `describe_table` — структура витрины
+- `query_sql` — read-only SELECT по DuckDB (только SELECT/WITH, лимит строк, таймаут)
+- `get_lsi_current` — текущий honest-LSI: значения, статусы, вклады, топ-драйверы
+- `get_lsi_series` — LSI за период: статистика, пик, распределение по зонам
+- `get_features` — фичи модуля M1–M5 со статистикой или сырыми значениями
+- `get_data_freshness` — свежесть таблиц с поправкой на график публикации источника
+
 **Примеры вопросов:**
-- Что было в феврале 2022?
-- Какой текущий статус ликвидности?
-- Есть ли налоговое давление?
-- Что показывает LSI Global?
-- Был ли стресс в декабре 2014?
-
-**Как включить LLM API:**
-
-Скопируйте `.env.example` в `.env` и заполните значения (или задайте
-переменные среды напрямую). Подойдёт любой OpenAI-совместимый провайдер:
-```bash
-OPENAI_API_KEY=sk-...
-LLM_BASE_URL=https://api.odirouter.ai/v1
-OPENAI_MODEL=grok-4.5
-```
-Нужен пакет `openai`: `pip install openai`.
+- Какой сейчас статус и какой модуль даёт основной вклад?
+- Сравни март 2022 с текущим состоянием.
+- Покажи фичи M2 за июль — что менялось?
+- Есть ли в данных колонки-константы, которые нельзя трактовать как сигнал?
+- Когда LSI Global последний раз был в красной зоне?
 
 **Ограничения:**
-- LLM отвечает только по переданному контексту — без внешних новостей.
-- Дата данных может отличаться от сегодняшней даты.
-- LSI Local и LSI Global имеют разные обучающие окна.
-- LSI — модельный индикатор; финальное суждение остаётся за аналитиком.
-- Этот модуль не влияет на расчёт LSI.
+- Аналитик читает посчитанный индекс и не пересчитывает LSI сам.
+- Он не строит прогнозы и не заявляет причинность — только гипотезы и способ их проверки.
+- LSI Local и Global считаются на разных окнах и не смешиваются.
+- Дата данных может отличаться от сегодняшней календарной даты.
+- Предел {analyst_agent.MAX_ITERATIONS} обращений к инструментам на вопрос: сложный
+  запрос лучше разбить на несколько.
+- Каждый вопрос — это несколько платных запросов к модели.
 """)
