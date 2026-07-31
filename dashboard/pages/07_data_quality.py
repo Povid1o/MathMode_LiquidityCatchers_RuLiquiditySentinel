@@ -9,6 +9,7 @@ from dashboard.data.loader import (
     load_m1, load_m2, load_m3, load_m4, load_m5, load_final, dataset_summary
 )
 from dashboard.config import PLOTLY_TEMPLATE, MODULE_LABELS
+from backend.src.services import feature_catalog as fc
 
 st.set_page_config(page_title="Качество данных", layout="wide")
 st.title("Качество данных")
@@ -168,3 +169,49 @@ st.metric(
     f"{coverage:.1f}%",
     delta=f"{len(df['date'].unique())} из {len(date_range)} дней",
 )
+
+st.markdown("---")
+
+# --- Покрытие каталога признаков ---
+# Пробелы должны быть видимы: новая фича попадает сюда, а не молча уходит на
+# автоподпись, которую легко принять за выверенную.
+st.subheader("Каталог названий признаков")
+
+_catalog_cov = fc.coverage(df.columns)
+_cols = st.columns(3)
+_cols[0].metric("Признаков в наборе", _catalog_cov["total"])
+_cols[1].metric("С человеческим названием", f"{_catalog_cov['covered']} ({_catalog_cov['coverage_pct']}%)")
+_cols[2].metric("Ждут верификации", len(_catalog_cov["needs_review"]))
+
+if _catalog_cov["missing"]:
+    with st.expander(f"Без названия в каталоге — {_catalog_cov['missing_count']}", expanded=False):
+        st.caption(
+            "Эти признаки показываются автоподписью, сгенерированной из технического "
+            "имени. Добавьте их в backend/src/services/feature_catalog.py."
+        )
+        st.dataframe(
+            pd.DataFrame({
+                "Колонка": _catalog_cov["missing"],
+                "Автоподпись": [fc.label(c) for c in _catalog_cov["missing"]],
+            }),
+            use_container_width=True, hide_index=True,
+        )
+
+if _catalog_cov["needs_review"]:
+    with st.expander(f"Формулировка не подтверждена — {len(_catalog_cov['needs_review'])}", expanded=False):
+        st.caption(
+            "Название выведено из кода, но смысл допускает трактовки. Подтвердите "
+            "формулировку и смените status на verified."
+        )
+        st.dataframe(
+            pd.DataFrame([
+                {
+                    "Колонка": c,
+                    "Название": fc.label(c),
+                    "Что это": fc.description(c),
+                    "Как читать рост": fc.HIGHER_MEANS_HINT[fc.lookup(c).higher_means],
+                }
+                for c in _catalog_cov["needs_review"]
+            ]),
+            use_container_width=True, hide_index=True,
+        )

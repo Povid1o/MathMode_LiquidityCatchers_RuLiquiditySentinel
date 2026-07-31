@@ -68,6 +68,10 @@ def _build_figure(spec: dict[str, Any]) -> go.Figure | None:
     title = spec.get("title", "")
     yaxis_title = spec.get("yaxis_title", "")
 
+    # Легенду и подписи берём человеческие: технические имена колонок на графике
+    # для специалиста по ликвидности такой же тёмный лес, как в тексте ответа.
+    labels = spec.get("labels") or {c: c for c in columns}
+
     if kind == "signal":
         return signal_line(frame, date_column, columns[0], title=title)
     if kind == "bar":
@@ -75,13 +79,19 @@ def _build_figure(spec: dict[str, Any]) -> go.Figure | None:
     if kind == "dual_axis" and len(columns) >= 2:
         return dual_axis_chart(
             frame, date_column, columns[0], columns[1],
-            y1_label=columns[0], y2_label=columns[1], title=title,
+            y1_label=labels.get(columns[0], columns[0]),
+            y2_label=labels.get(columns[1], columns[1]),
+            title=title,
         )
     if kind == "flag_timeline":
-        return flag_timeline(frame, date_column, {c: c for c in columns}, title=title)
+        return flag_timeline(
+            frame, date_column, {c: labels.get(c, c) for c in columns}, title=title
+        )
 
     # line — и он же разумный запасной вариант для неизвестного вида
-    return line_chart(frame, date_column, columns, title=title, yaxis_title=yaxis_title)
+    return line_chart(
+        frame, date_column, columns, labels=labels, title=title, yaxis_title=yaxis_title
+    )
 
 
 def render_charts(specs: list[dict[str, Any]], *, key_prefix: str = "") -> None:

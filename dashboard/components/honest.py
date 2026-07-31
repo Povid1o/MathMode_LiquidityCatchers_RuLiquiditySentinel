@@ -9,45 +9,31 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+from backend.src.services import feature_catalog as fc
 from dashboard.config import COLORS, PLOTLY_TEMPLATE
 
-# Человекочитаемые подписи honest-признаков (входят в PCA honest-LSI).
+# Подписи признаков живут в едином каталоге backend/src/services/feature_catalog.py:
+# их читают и страницы дашборда, и AI-аналитик, поэтому держать словарь здесь
+# означало бы иметь два расходящихся источника правды. Здесь остаются только
+# тонкие обёртки для обратной совместимости с существующими вызовами.
 HONEST_FEATURE_LABELS: dict[str, str] = {
-    # M1 — резервы / RUONIA
-    "m1_spread_mad_score": "Аномальность спреда резервов (MAD)",
-    "m1_spread_relative_mad_score": "Аномальность относит. спреда (MAD)",
-    "m1_reserve_load_mad_score": "Аномальность нагрузки резервов (MAD)",
-    "m1_ruonia_mad_score": "Аномальность RUONIA (MAD)",
-    "m1_spread_vol": "Волатильность спреда |Δ| (MAD)",
-    # M2 — РЕПО-аукционы
-    "m2_auction_flag": "Факт аукциона РЕПО",
-    "m2_Flag_Demand": "Флаг высокого спроса",
-    "m2_base_cover_mad": "Аномальность переподписки (MAD)",
-    "m2_cutoff_spread": "Спред отсечения к ключевой ставке",
-    "m2_cutoff_spread_available": "Доступность спреда отсечения",
-    "m2_short_active30": "Активный short-РЕПО (30 дн.)",
-    "m2_days_since_short": "Дней с последнего short-РЕПО",
-    # M3 — ОФЗ-аукционы (event-aware)
-    "m3_auction_flag": "Факт аукциона ОФЗ",
-    "m3_Flag_Nedospros": "Флаг недоспроса",
-    "m3x_cover": "Переподписка (event-aware)",
-    "m3x_placement": "Доля размещения от предложения",
-    "m3x_yield_to_key": "Премия доходности к ключевой",
-    "m3x_age": "Возраст последнего аукциона",
-    "m3x_available": "Наличие данных аукциона",
-    "m3x_days_since": "Дней с последнего аукциона",
-    "m3x_failed": "Признак несостоявшегося аукциона",
-    # M5 — ликвидность ЦБ / ЕКС
-    "m5x_claims": "Требования ЦБ к банкам",
-    "m5x_liab": "Обязательства ЦБ перед банками",
-    "m5x_repostd": "Постоянное РЕПО (standing facility)",
-    "m5x_secured": "Обеспеченные кредиты (standing)",
-    "m5x_rk_bidders": "Число заявителей Росказна (Local)",
+    column: spec.label for column, spec in fc.CATALOG.items()
 }
 
 
 def feature_label(feature: str) -> str:
-    return HONEST_FEATURE_LABELS.get(feature, feature)
+    """Человекочитаемая подпись признака."""
+    return fc.label(feature)
+
+
+def feature_label_flagged(feature: str) -> str:
+    """Подпись с пометкой ⚠︎, если формулировка ещё не подтверждена."""
+    return fc.label_with_flag(feature)
+
+
+def feature_description(feature: str) -> str:
+    """Пояснение смысла признака для тултипа."""
+    return fc.description(feature)
 
 
 def honest_driver_panel(contrib: dict, *, color: str | None = None, height: int = 320) -> None:
@@ -72,14 +58,16 @@ def honest_driver_panel(contrib: dict, *, color: str | None = None, height: int 
         "признакам индекса. Это PCA-приближение нагрузки, не SHAP и не причинный вклад."
     )
 
-    labels = [feature_label(f["feature"]) for f in feats]
+    labels = [feature_label_flagged(f["feature"]) for f in feats]
     values = [f["contrib_pct"] for f in feats]
+    descriptions = [fc.description(f["feature"]) or "—" for f in feats]
     fig = go.Figure(go.Bar(
         x=values, y=labels, orientation="h",
         marker_color=color,
         text=[f"{v:.1f}%" for v in values],
         textposition="outside",
-        hovertemplate="%{y}<br>Вклад: %{x:.2f}%<extra></extra>",
+        customdata=descriptions,
+        hovertemplate="%{y}<br>Вклад: %{x:.2f}%<br><br>%{customdata}<extra></extra>",
     ))
     fig.update_layout(
         template=PLOTLY_TEMPLATE, height=height,
@@ -92,7 +80,11 @@ def honest_driver_panel(contrib: dict, *, color: str | None = None, height: int 
 
     table = pd.DataFrame([
         {
-            "Признак": feature_label(f["feature"]),
+            "Признак": feature_label_flagged(f["feature"]),
+            "Что это": fc.description(f["feature"]) or "—",
+            "Как читать рост": fc.HIGHER_MEANS_HINT[
+                (fc.lookup(f["feature"]).higher_means if fc.lookup(f["feature"]) else "neutral")
+            ],
             "Колонка": f["feature"],
             "Вклад, %": f["contrib_pct"],
             "z (отклонение)": f["z_scaled"],
@@ -101,3 +93,11 @@ def honest_driver_panel(contrib: dict, *, color: str | None = None, height: int 
         for f in feats
     ])
     st.dataframe(table, use_container_width=True, hide_index=True)
+
+    unverified = [f["feature"] for f in feats if (spec := fc.lookup(f["feature"])) and spec.needs_review]
+    if unverified:
+        st.caption(
+            "⚠︎ Формулировка названия ещё не подтверждена предметным специалистом: "
+            + ", ".join(feature_label(f) for f in unverified)
+            + ". Само значение признака это не затрагивает — только его словесное описание."
+        )

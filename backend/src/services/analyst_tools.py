@@ -28,6 +28,7 @@ import pandas as pd
 
 from backend.src.db import warehouse as wh
 from backend.src.services import data_freshness as freshness
+from backend.src.services import feature_catalog as catalog
 from backend.src.services.honest_lsi_prediction import (
     DEFAULT_HONEST_PROFILE,
     get_honest_lsi_response,
@@ -214,7 +215,14 @@ def describe_table(table: str) -> dict[str, Any]:
     full_count = _run_sql_with_timeout(f'SELECT count(*) AS n FROM "{table}"')
 
     columns = [
-        {"name": str(name), "dtype": str(dtype)}
+        {
+            "name": str(name),
+            "dtype": str(dtype),
+            "label": catalog.label(str(name)),
+            "label_status": (
+                spec.status if (spec := catalog.lookup(str(name))) else "missing"
+            ),
+        }
         for name, dtype in zip(frame.columns, frame.dtypes)
     ]
 
@@ -408,8 +416,13 @@ def get_features(
     for column in module_columns:
         series = pd.to_numeric(frame[column], errors="coerce")
         non_null = series.dropna()
+        spec = catalog.lookup(column)
         statistics.append({
             "column": column,
+            "label": catalog.label(column),
+            "means": spec.description if spec else "",
+            "higher_means": spec.higher_means if spec else "unknown",
+            "label_status": spec.status if spec else "missing",
             "non_null": int(len(non_null)),
             "nulls": int(series.isna().sum()),
             "min": round(float(non_null.min()), 4) if not non_null.empty else None,
@@ -432,6 +445,49 @@ def get_features(
             "значений передайте columns (не больше "
             f"{MAX_EXPLICIT_COLUMNS}). Колонки из constant_columns не меняются на "
             "периоде — трактовать их как сигнал нельзя, это может быть заполнение пропусков."
+        ),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Справочник признаков
+# ---------------------------------------------------------------------------
+
+def lookup_features(
+    columns: list[str] | None = None,
+    module: str | None = None,
+) -> dict[str, Any]:
+    """Возвращает человеческие названия и смысл признаков.
+
+    Нужен, чтобы модель называла признаки понятно аналитику, а не техническими
+    именами, и не догадывалась о смысле по имени колонки.
+    """
+    if columns:
+        entries = [catalog.describe(column) for column in columns]
+    elif module:
+        key = module.strip().upper()
+        entries = [
+            catalog.describe(column)
+            for column, spec in catalog.CATALOG.items()
+            if spec.module.upper() == key
+        ]
+        if not entries:
+            raise ToolError(
+                f"В каталоге нет признаков модуля {key}. Доступны: "
+                + ", ".join(sorted({s.module for s in catalog.CATALOG.values()}))
+            )
+    else:
+        entries = [catalog.describe(column) for column in sorted(catalog.CATALOG)]
+
+    return {
+        "source": "feature_catalog",
+        "count": len(entries),
+        "features": entries,
+        "hint": (
+            "В ответе пользователю используй поле label, а техническое имя из column "
+            "давай один раз в скобках при первом упоминании. Поле higher_means "
+            "показывает, куда трактовать рост значения. Если status = needs_review "
+            "или missing, формулировка не подтверждена — оговори это."
         ),
     }
 
@@ -506,7 +562,10 @@ def plot_series(
             summary[column] = {"note": "нет числовых значений на периоде"}
             continue
         first, last = float(series.iloc[0]), float(series.iloc[-1])
+        spec = catalog.lookup(column)
         summary[column] = {
+            "label": catalog.label(column),
+            "higher_means": spec.higher_means if spec else "unknown",
             "first": round(first, 4),
             "last": round(last, 4),
             "change": round(last - first, 4),
@@ -532,7 +591,9 @@ def plot_series(
             "kind": kind,
             "date_column": date_column,
             "columns": columns,
-            "title": title or f"{', '.join(columns)} — {table}",
+            # Легенда и заголовок — человеческими названиями, а не именами колонок
+            "labels": {column: catalog.label(column) for column in columns},
+            "title": title or f"{', '.join(catalog.label(c) for c in columns)}",
             "yaxis_title": yaxis_title,
             "data": _frame_to_records(frame),
         },
@@ -775,6 +836,7 @@ TOOL_IMPLEMENTATIONS = {
     "get_lsi_series": get_lsi_series,
     "get_features": get_features,
     "get_data_freshness": get_data_freshness,
+    "lookup_features": lookup_features,
     "plot_series": plot_series,
     "plot_contributions": plot_contributions,
     "plot_custom": plot_custom,
@@ -875,6 +937,33 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "dataset": {"type": "string", "enum": ["final", "honest"]},
                 },
                 "required": ["module", "date_from", "date_to"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "lookup_features",
+            "description": (
+                "Узнать человеческие названия признаков и их смысл: что измеряет, в чём "
+                "измеряется, куда трактовать рост значения. Вызывай ВСЕГДА перед тем, как "
+                "упомянуть признак в ответе — технические имена вроде m3x_cover пользователю "
+                "непонятны, а направление знака из имени не выводится. Без аргументов "
+                "возвращает весь каталог."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "columns": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Конкретные технические имена признаков",
+                    },
+                    "module": {
+                        "type": "string",
+                        "description": "Модуль целиком: M1, M2, M3, M4, M5",
+                    },
+                },
             },
         },
     },
