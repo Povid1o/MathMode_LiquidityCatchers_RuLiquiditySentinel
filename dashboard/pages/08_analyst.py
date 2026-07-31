@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 import streamlit as st
 
 from backend.src.services import analyst_agent
+from dashboard.components.agent_charts import render_charts
 from backend.src.services.lsi_commentary_service import (
     DEFAULT_THRESHOLD_PROFILE,
     build_rule_based_commentary,
@@ -149,9 +150,10 @@ st.caption(
 st.session_state.setdefault("analyst_api_messages", [])
 st.session_state.setdefault("analyst_display_messages", [])
 
-for entry in st.session_state["analyst_display_messages"]:
+for position, entry in enumerate(st.session_state["analyst_display_messages"]):
     with st.chat_message(entry["role"]):
         st.markdown(entry["content"])
+        render_charts(entry.get("charts", []), key_prefix=f"hist{position}")
         for record in entry.get("trace", []):
             icon = "✅" if record["ok"] else "⚠️"
             with st.expander(f"{icon} {record['name']}", expanded=False):
@@ -198,16 +200,20 @@ if question := st.chat_input("Спросите о состоянии ликви�
                     ]
                     iterations = result.iterations
                     truncated = result.truncated_history
+                    charts = result.charts
                 except analyst_agent.AnalystAgentUnavailable as exc:
-                    reply, trace, iterations, truncated = f"Агент недоступен: {exc}", [], 0, False
+                    reply, trace, iterations, truncated, charts = (
+                        f"Агент недоступен: {exc}", [], 0, False, []
+                    )
                 except Exception as exc:
                     reply = (
                         f"Ошибка при обработке вопроса: {exc}\n\n"
                         "Попробуйте переформулировать или обновить страницу."
                     )
-                    trace, iterations, truncated = [], 0, False
+                    trace, iterations, truncated, charts = [], 0, False, []
 
             st.markdown(reply)
+            render_charts(charts, key_prefix="live")
             for record in trace:
                 icon = "✅" if record["ok"] else "⚠️"
                 with st.expander(f"{icon} {record['name']}", expanded=False):
@@ -218,9 +224,12 @@ if question := st.chat_input("Спросите о состоянии ликви�
             if truncated:
                 st.caption("⚠️ Ранние ходы диалога вытеснены из контекста по лимиту размера.")
 
-            st.session_state["analyst_display_messages"].append(
-                {"role": "assistant", "content": reply, "trace": trace if show_trace else []}
-            )
+            st.session_state["analyst_display_messages"].append({
+                "role": "assistant",
+                "content": reply,
+                "trace": trace if show_trace else [],
+                "charts": charts,
+            })
 
 if st.session_state["analyst_display_messages"]:
     if st.button("🗑️ Очистить историю чата"):
@@ -243,10 +252,14 @@ with st.expander("📖 Что умеет аналитик и чего не ум�
 - `get_lsi_series` — LSI за период: статистика, пик, распределение по зонам
 - `get_features` — фичи модуля M1–M5 со статистикой или сырыми значениями
 - `get_data_freshness` — свежесть таблиц с поправкой на график публикации источника
+- `plot_series` — график: line, signal (с полосами порога), bar, dual_axis, flag_timeline
+- `plot_custom` — произвольная фигура Plotly, когда типового вида не хватает
 
 **Примеры вопросов:**
 - Какой сейчас статус и какой модуль даёт основной вклад?
 - Сравни март 2022 с текущим состоянием.
+- Покажи график LSI Global за последний год и объясни, что изменилось.
+- Почему выросла ставка отсечения РЕПО в июле? Покажи динамику.
 - Покажи фичи M2 за июль — что менялось?
 - Есть ли в данных колонки-константы, которые нельзя трактовать как сигнал?
 - Когда LSI Global последний раз был в красной зоне?

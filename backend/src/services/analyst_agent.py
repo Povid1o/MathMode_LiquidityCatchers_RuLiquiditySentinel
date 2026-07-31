@@ -51,7 +51,10 @@ HISTORY_CHAR_BUDGET = 60_000
 # Результат одного инструмента, который не должен вытеснить весь диалог.
 MAX_TOOL_RESULT_CHARS = 12_000
 
-MAX_OUTPUT_TOKENS = 4000
+# Reasoning-модели этого провайдера тратят часть бюджета вывода на размышление
+# до появления текста, поэтому лимит должен быть с запасом: иначе ответ приходит
+# пустым, хотя инструменты уже отработали.
+MAX_OUTPUT_TOKENS = 8000
 TEMPERATURE = 0.2
 
 
@@ -71,6 +74,22 @@ SYSTEM_PROMPT = """Ты — аналитик рублёвого денежног
 3. Для периода в прошлом — get_lsi_series.
 4. Для фич модуля — get_features (сначала без columns, чтобы увидеть перечень).
 5. Для всего остального — query_sql. Не знаешь структуру — list_tables и describe_table.
+6. Просят показать динамику, ряд, «построй график» — plot_series.
+   Просят вклады модулей, «из чего сложился индекс» — plot_contributions.
+   Нужного вида нет среди готовых — plot_custom с фигурой Plotly.
+
+НИКАКИХ ПРЕАМБУЛ
+Не пиши «сейчас построю», «уточняю», «давай посмотрю». Либо вызывай инструмент
+прямо в этом шаге, либо давай готовый ответ. Текст без вызова инструмента
+считается финальным ответом и показывается пользователю как есть — объявление
+о будущем действии оставит его без ответа и без графика.
+
+ГРАФИКИ
+График не заменяет ответ. Построив его, обязательно опиши словами, что на нём
+видно: направление, величину изменения, где перелом. Опирайся на series_summary
+из результата инструмента — сами точки ряда тебе не возвращаются, и это нормально.
+Не строй график там, где хватает одного числа.
+Если пользователь попросил и объяснение, и график — сделай оба, в одном ответе.
 
 ДИСЦИПЛИНА ССЫЛОК
 Каждое число в ответе сопровождай источником: имя таблицы или инструмента, откуда
@@ -90,10 +109,10 @@ SYSTEM_PROMPT = """Ты — аналитик рублёвого денежног
   Всегда указывай дату данных.
 
 ЛОВУШКИ ДАННЫХ
-- Даты в витрине хранятся неоднородно: где-то VARCHAR DD-MM-YYYY, где-то
-  VARCHAR YYYY-MM-DD, в honest_lsi_scores TIMESTAMP. В SQL по дате подставляй
-  date_sql_expression из list_tables или describe_table. Прямое сравнение
-  VARCHAR-даты со строкой не выдаёт ошибку, но даёт неверный результат.
+- Основные колонки дат имеют тип TIMESTAMP и сравниваются с литералами DATE
+  напрямую. Отдельные вспомогательные колонки *_date могли остаться VARCHAR:
+  для них бери date_sql_expression из describe_table, иначе сравнение будет
+  лексикографическим и даст неверный результат без сообщения об ошибке.
 - Колонка, у которой на периоде одно значение (constant_columns), может быть не
   сигналом, а заполнением пропусков. Не трактуй такую колонку как «стресса нет».
 - Если инструмент вернул ошибку, прочитай её и исправь запрос, а не повторяй тот же.
@@ -121,6 +140,7 @@ class AgentResult:
     reply: str
     messages: list[dict[str, Any]]
     trace: list[ToolCallRecord] = field(default_factory=list)
+    charts: list[dict[str, Any]] = field(default_factory=list)
     iterations: int = 0
     truncated_history: bool = False
 
@@ -180,30 +200,42 @@ def _serialize_tool_result(payload: Any) -> str:
     )
 
 
-def _dispatch_tool(name: str, arguments: dict[str, Any]) -> tuple[str, bool, str]:
+def _dispatch_tool(
+    name: str,
+    arguments: dict[str, Any],
+) -> tuple[str, bool, str, dict[str, Any] | None]:
     """Выполняет инструмент, превращая ошибку в сообщение для модели.
 
     Ошибку возвращаем модели как результат, а не бросаем наружу: агент должен
     иметь шанс исправить запрос сам — это дешевле, чем падение всего хода.
+
+    Четвёртый элемент — спека графика, если инструмент её вернул. Она вырезается
+    из payload до сериализации: точки ряда нужны интерфейсу для отрисовки, но не
+    модели, и в контексте они заняли бы больше места, чем весь диалог.
     """
     implementation: Callable[..., Any] | None = TOOL_IMPLEMENTATIONS.get(name)
     if implementation is None:
         message = f"Инструмента '{name}' не существует"
-        return json.dumps({"error": message}, ensure_ascii=False), False, message
+        return json.dumps({"error": message}, ensure_ascii=False), False, message, None
 
     try:
         payload = implementation(**arguments)
     except ToolError as error:
         message = str(error)
-        return json.dumps({"error": message}, ensure_ascii=False), False, message
+        return json.dumps({"error": message}, ensure_ascii=False), False, message, None
     except TypeError as error:
         message = f"Неверные аргументы: {error}"
-        return json.dumps({"error": message}, ensure_ascii=False), False, message
+        return json.dumps({"error": message}, ensure_ascii=False), False, message, None
     except Exception as error:  # noqa: BLE001 — модель должна увидеть причину
         message = f"{type(error).__name__}: {error}"
-        return json.dumps({"error": message}, ensure_ascii=False), False, message
+        return json.dumps({"error": message}, ensure_ascii=False), False, message, None
 
-    return _serialize_tool_result(payload), True, _describe_payload(payload)
+    chart = None
+    if isinstance(payload, dict) and "_chart" in payload:
+        payload = dict(payload)
+        chart = payload.pop("_chart")
+
+    return _serialize_tool_result(payload), True, _describe_payload(payload), chart
 
 
 def _describe_payload(payload: Any) -> str:
@@ -249,6 +281,36 @@ def _trim_history(messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]],
     return last, True
 
 
+def _finalize(client: Any, model: str, messages: list[dict[str, Any]]) -> str:
+    """Добивает финальный текст, когда модель вернула пустой content.
+
+    Вызов без tools: инструменты уже отработали, и повторный их перебор только
+    сжёг бы ещё один платный запрос.
+    """
+    nudge = messages + [{
+        "role": "user",
+        "content": (
+            "Сформулируй итоговый ответ по уже полученным данным. "
+            "Только текст, инструменты вызывать не нужно."
+        ),
+    }]
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[_system_message()] + nudge,
+            max_tokens=MAX_OUTPUT_TOKENS,
+            temperature=TEMPERATURE,
+        )
+        text = (response.choices[0].message.content or "").strip()
+    except Exception as error:  # noqa: BLE001
+        return f"Не удалось получить текстовый ответ модели: {error}"
+
+    return text or (
+        "Модель не вернула текстовый ответ, хотя данные собраны. "
+        "Попробуйте задать вопрос короче."
+    )
+
+
 def run_turn(
     user_message: str,
     history: list[dict[str, Any]] | None = None,
@@ -268,6 +330,7 @@ def run_turn(
     messages, truncated = _trim_history(messages)
 
     trace: list[ToolCallRecord] = []
+    charts: list[dict[str, Any]] = []
     iterations = 0
 
     while iterations < max_iterations:
@@ -288,14 +351,16 @@ def run_turn(
         if not tool_calls:
             reply = (message.content or "").strip()
             if not reply:
-                reply = (
-                    "Модель не вернула текстовый ответ. Попробуйте переформулировать вопрос."
-                )
+                # Инструменты отработали, а текста нет: модель израсходовала бюджет
+                # вывода на размышление. Просим сформулировать ответ отдельным
+                # вызовом без инструментов — данные для него уже в истории.
+                reply = _finalize(client, model, messages)
             messages.append({"role": "assistant", "content": reply})
             return AgentResult(
                 reply=reply,
                 messages=messages,
                 trace=trace,
+                charts=charts,
                 iterations=iterations,
                 truncated_history=truncated,
             )
@@ -330,8 +395,10 @@ def run_turn(
                 messages.append({"role": "tool", "tool_call_id": call.id, "content": content})
                 continue
 
-            content, ok, summary = _dispatch_tool(name, arguments)
+            content, ok, summary, chart = _dispatch_tool(name, arguments)
             trace.append(ToolCallRecord(name, arguments, ok, summary))
+            if chart is not None:
+                charts.append(chart)
             messages.append({"role": "tool", "tool_call_id": call.id, "content": content})
 
     # Потолок итераций: просим модель ответить тем, что уже собрано
@@ -356,6 +423,7 @@ def run_turn(
         reply=reply,
         messages=messages,
         trace=trace,
+        charts=charts,
         iterations=iterations,
         truncated_history=truncated,
     )

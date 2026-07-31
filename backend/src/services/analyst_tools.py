@@ -193,10 +193,11 @@ def list_tables() -> dict[str, Any]:
             f"Значения LSI и вклады модулей — в {LSI_SCORES_TABLE}."
         ),
         "date_warning": (
-            "Даты хранятся неоднородно: часть таблиц в VARCHAR DD-MM-YYYY, часть в "
-            "VARCHAR YYYY-MM-DD, honest_lsi_scores в TIMESTAMP. В условиях по дате "
-            "ВСЕГДА подставляй date_sql_expression этой таблицы. Прямое сравнение "
-            "VARCHAR-даты со строкой не даёт ошибки, но даёт неверный результат."
+            "Основные колонки дат в витрине имеют тип TIMESTAMP, их можно сравнивать "
+            "с литералами DATE напрямую. Отдельные вспомогательные колонки *_date "
+            "могли остаться VARCHAR там, где формат источника не разобрался — для них "
+            "используй date_sql_expression из describe_table, иначе сравнение окажется "
+            "лексикографическим и даст неверный результат без ошибки."
         ),
     }
 
@@ -436,6 +437,209 @@ def get_features(
 
 
 # ---------------------------------------------------------------------------
+# Графики
+# ---------------------------------------------------------------------------
+
+# Спека рисуется существующими компонентами dashboard/components/charts.py:
+# модель описывает, ЧТО показать, а не генерирует код. Стиль остаётся единым
+# с остальным дашбордом, и исполнять произвольный код не требуется.
+CHART_KINDS = ("line", "signal", "bar", "dual_axis", "flag_timeline")
+
+MAX_CHART_SERIES = 4
+MAX_CHART_POINTS = 2000
+
+
+def plot_series(
+    table: str,
+    columns: list[str],
+    date_from: str,
+    date_to: str,
+    kind: str = "line",
+    title: str = "",
+    yaxis_title: str = "",
+) -> dict[str, Any]:
+    """Строит график по колонкам таблицы за период.
+
+    Данные для отрисовки возвращаются в служебном ключе `_chart`, который агент
+    вырезает и НЕ отправляет модели: иначе сотни точек ряда съели бы контекст.
+    Модели достаётся только сводка — чего достаточно, чтобы описать график словами.
+    """
+    if kind not in CHART_KINDS:
+        raise ToolError(f"kind должен быть одним из {', '.join(CHART_KINDS)}, получено: {kind}")
+
+    available = wh.list_tables()
+    if table not in available:
+        raise ToolError(f"Таблицы '{table}' нет в витрине. Доступны: {', '.join(sorted(available))}")
+
+    if not columns:
+        raise ToolError("Нужна хотя бы одна колонка для графика")
+    if len(columns) > MAX_CHART_SERIES:
+        raise ToolError(f"Не больше {MAX_CHART_SERIES} рядов на графике, запрошено {len(columns)}")
+    if kind == "dual_axis" and len(columns) != 2:
+        raise ToolError("kind='dual_axis' требует ровно две колонки")
+
+    start, end = _parse_period(date_from, date_to)
+    date_column, _, _ = date_expression(table)
+
+    quoted = ", ".join(f'"{c}"' for c in columns)
+    try:
+        frame = _run_sql_with_timeout(
+            f'SELECT "{date_column}", {quoted} FROM "{table}" '
+            f"WHERE {_period_filter(table, start, end)} "
+            f'ORDER BY "{date_column}" LIMIT {MAX_CHART_POINTS}'
+        )
+    except ToolError:
+        raise
+    except Exception as error:
+        raise ToolError(
+            f"Не удалось выбрать данные: {error}. "
+            f"Проверьте имена колонок через describe_table('{table}')"
+        ) from error
+
+    if frame.empty:
+        raise ToolError(f"За период {start.date()}..{end.date()} в {table} нет данных")
+
+    summary: dict[str, Any] = {}
+    for column in columns:
+        series = pd.to_numeric(frame[column], errors="coerce").dropna()
+        if series.empty:
+            summary[column] = {"note": "нет числовых значений на периоде"}
+            continue
+        first, last = float(series.iloc[0]), float(series.iloc[-1])
+        summary[column] = {
+            "first": round(first, 4),
+            "last": round(last, 4),
+            "change": round(last - first, 4),
+            "min": round(float(series.min()), 4),
+            "max": round(float(series.max()), 4),
+            "mean": round(float(series.mean()), 4),
+        }
+
+    return {
+        "source": f"{table} (график)",
+        "chart_rendered": True,
+        "kind": kind,
+        "table": table,
+        "columns": columns,
+        "period": [str(start.date()), str(end.date())],
+        "point_count": int(len(frame)),
+        "series_summary": summary,
+        "note": (
+            "График показан пользователю. Опиши словами, что на нём видно, опираясь "
+            "на series_summary — сами точки ряда тебе не нужны."
+        ),
+        "_chart": {
+            "kind": kind,
+            "date_column": date_column,
+            "columns": columns,
+            "title": title or f"{', '.join(columns)} — {table}",
+            "yaxis_title": yaxis_title,
+            "data": _frame_to_records(frame),
+        },
+    }
+
+
+def plot_contributions(
+    date: str | None = None,
+    metric: str = "lsi_global",
+) -> dict[str, Any]:
+    """Диаграмма вкладов модулей в LSI на конкретную дату.
+
+    Отдельный инструмент, потому что вклады на одну дату — это не временной ряд:
+    plot_series под них не подходит, а собирать фигуру Plotly руками ради частого
+    запроса модель заставлять не стоит.
+    """
+    if metric not in ("lsi_global", "lsi_local"):
+        raise ToolError("metric должен быть 'lsi_global' или 'lsi_local'")
+
+    if date is None:
+        frame = _run_sql_with_timeout(
+            f'SELECT * FROM "{LSI_SCORES_TABLE}" ORDER BY date DESC LIMIT 1'
+        )
+    else:
+        target, _ = _parse_period(date, date)
+        frame = _run_sql_with_timeout(
+            f'SELECT * FROM "{LSI_SCORES_TABLE}" '
+            f"WHERE CAST(date AS DATE) <= DATE '{target.date()}' "
+            "ORDER BY date DESC LIMIT 1"
+        )
+
+    if frame.empty:
+        raise ToolError(f"Нет данных LSI на дату {date or 'последнюю'} или раньше неё")
+
+    row = frame.iloc[0]
+    actual_date = str(pd.to_datetime(row["date"]).date())
+    marker = f"{metric}_contrib_"
+
+    contributions = {
+        str(column)[len(marker):].upper(): float(row[column])
+        for column in frame.columns
+        if str(column).startswith(marker) and pd.notna(row[column])
+    }
+    if not contributions:
+        raise ToolError(f"В {LSI_SCORES_TABLE} нет колонок вкладов для {metric}")
+
+    ordered = sorted(contributions.items(), key=lambda item: item[1], reverse=True)
+    lsi_value = float(row[metric]) if pd.notna(row.get(metric)) else None
+
+    return {
+        "source": LSI_SCORES_TABLE,
+        "chart_rendered": True,
+        "date": actual_date,
+        "metric": metric,
+        "lsi_value": round(lsi_value, 2) if lsi_value is not None else None,
+        "contributions_pct": {name: round(value, 2) for name, value in ordered},
+        "note": (
+            "Диаграмма показана пользователю. Вклады — это доли модулей в значении "
+            "индекса, а не причины движения: трактуй их как указание, какой блок "
+            "смотреть первым."
+        ),
+        "_chart": {
+            "kind": "contributions",
+            "title": f"Вклады модулей в {metric} на {actual_date}",
+            "data": [
+                {"module": name, "contribution": round(value, 2)} for name, value in ordered
+            ],
+        },
+    }
+
+
+def plot_custom(figure_json: dict[str, Any], title: str = "") -> dict[str, Any]:
+    """Рисует произвольную фигуру Plotly по её JSON-описанию.
+
+    Запасной путь для визуализаций, которых нет среди готовых видов. Принимается
+    только описание фигуры (data/layout) — не код, поэтому исполнять нечего.
+    """
+    if not isinstance(figure_json, dict):
+        raise ToolError("figure_json должен быть объектом с ключами data и layout")
+
+    data = figure_json.get("data")
+    if not isinstance(data, list) or not data:
+        raise ToolError("figure_json.data должен быть непустым списком трейсов")
+    if not all(isinstance(trace, dict) for trace in data):
+        raise ToolError("каждый трейс в figure_json.data должен быть объектом")
+
+    layout = figure_json.get("layout") or {}
+    if not isinstance(layout, dict):
+        raise ToolError("figure_json.layout должен быть объектом")
+
+    return {
+        "source": "plot_custom (фигура Plotly от модели)",
+        "chart_rendered": True,
+        "trace_count": len(data),
+        "note": (
+            "Фигура показана пользователю. Числа для неё ты должен был получить "
+            "инструментами данных — не придумывай значения."
+        ),
+        "_chart": {
+            "kind": "custom",
+            "title": title,
+            "figure": {"data": data, "layout": layout},
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
 # Свежесть
 # ---------------------------------------------------------------------------
 
@@ -571,6 +775,9 @@ TOOL_IMPLEMENTATIONS = {
     "get_lsi_series": get_lsi_series,
     "get_features": get_features,
     "get_data_freshness": get_data_freshness,
+    "plot_series": plot_series,
+    "plot_contributions": plot_contributions,
+    "plot_custom": plot_custom,
 }
 
 TOOL_SCHEMAS: list[dict[str, Any]] = [
@@ -668,6 +875,77 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "dataset": {"type": "string", "enum": ["final", "honest"]},
                 },
                 "required": ["module", "date_from", "date_to"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "plot_series",
+            "description": (
+                "Построить и показать пользователю график по колонкам таблицы за период. "
+                "Виды: line (несколько рядов), signal (ряд с полосами порога стресса), "
+                "bar, dual_axis (ровно две колонки на двух осях), flag_timeline (бинарные флаги). "
+                "Вызывай, когда пользователь просит показать график, динамику или сравнение "
+                "визуально. В ответе опиши словами, что на графике видно."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "table": {"type": "string", "description": "Таблица витрины"},
+                    "columns": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": f"Колонки-ряды, не больше {MAX_CHART_SERIES}",
+                    },
+                    "date_from": {"type": "string", "description": "YYYY-MM-DD"},
+                    "date_to": {"type": "string", "description": "YYYY-MM-DD"},
+                    "kind": {"type": "string", "enum": list(CHART_KINDS)},
+                    "title": {"type": "string", "description": "Заголовок графика"},
+                    "yaxis_title": {"type": "string", "description": "Подпись оси Y"},
+                },
+                "required": ["table", "columns", "date_from", "date_to"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "plot_contributions",
+            "description": (
+                "Показать диаграмму вкладов модулей в LSI на дату. Используй для запросов "
+                "вида «покажи вклады», «диаграмма по модулям», «из чего сложился индекс». "
+                "Без параметра date берётся последняя доступная дата."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "date": {"type": "string", "description": "YYYY-MM-DD, необязательно"},
+                    "metric": {"type": "string", "enum": ["lsi_global", "lsi_local"]},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "plot_custom",
+            "description": (
+                "Показать произвольную фигуру Plotly по её JSON-описанию (data + layout). "
+                "Запасной путь: используй, только когда нужного вида нет в plot_series — "
+                "например для наложения вкладов модулей, гистограммы распределения или "
+                "диаграммы рассеяния. Числа бери из инструментов данных, не выдумывай."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "figure_json": {
+                        "type": "object",
+                        "description": "Объект фигуры Plotly: {\"data\": [...], \"layout\": {...}}",
+                    },
+                    "title": {"type": "string"},
+                },
+                "required": ["figure_json"],
             },
         },
     },

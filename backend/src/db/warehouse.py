@@ -83,6 +83,52 @@ def _to_datetime(series: pd.Series) -> pd.Series:
     return pd.to_datetime(series, dayfirst=True, errors="coerce")
 
 
+# Доля значений, которая обязана разобраться, чтобы считать колонку датой.
+_DATE_PARSE_MIN_SHARE = 0.9
+
+
+def _normalize_date_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Приводит строковые колонки-даты к настоящему datetime перед записью.
+
+    Processed-файлы хранят дату строкой, причём в двух форматах: часть в
+    DD-MM-YYYY, часть в YYYY-MM-DD. Если так же положить их в warehouse, любое
+    условие вида `WHERE date >= '2022-01-01'` станет лексикографическим
+    сравнением строк: ошибки не будет, а результат окажется неверным. Особенно
+    опасно для SQL, который пишет AI-аналитик.
+
+    Конвертируем только колонки с датоподобным именем и только если разбирается
+    почти всё: иначе тихо испортили бы данные там, где формат не распознан.
+    """
+    date_like = [
+        column for column in df.columns
+        if str(column).lower() in _DATE_CANDIDATES
+        or str(column).lower().endswith("_date")
+    ]
+    if not date_like:
+        return df
+
+    normalized = df
+    for column in date_like:
+        series = df[column]
+        if pd.api.types.is_datetime64_any_dtype(series):
+            continue
+
+        non_null = series.notna().sum()
+        if non_null == 0:
+            continue
+
+        converted = _to_datetime(series)
+        parsed_share = converted.notna().sum() / non_null
+        if parsed_share < _DATE_PARSE_MIN_SHARE:
+            continue
+
+        if normalized is df:
+            normalized = df.copy()
+        normalized[column] = converted
+
+    return normalized
+
+
 def _read_source_file(path: Path) -> pd.DataFrame:
     """Читает processed-файл (parquet или csv)."""
     if path.suffix == ".parquet":
@@ -126,6 +172,7 @@ def write_table(
     """Перезаписывает таблицу warehouse из DataFrame и обновляет manifest."""
     own = conn is None
     conn = conn or connect(read_only=False)
+    df = _normalize_date_columns(df)
     try:
         conn.register("_incoming_df", df)
         conn.execute(f'CREATE OR REPLACE TABLE "{name}" AS SELECT * FROM _incoming_df')
