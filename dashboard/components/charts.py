@@ -90,12 +90,18 @@ def mad_score_bar(
     fig = go.Figure(go.Bar(
         x=df[x], y=vals,
         marker_color=colors,
+        marker_line_width=0,
         name=y,
     ))
     fig.add_hline(y=MAD_STRESS_THRESHOLD, line_dash="dot", line_color=COLORS["danger"], opacity=0.6)
     fig.add_hline(y=-MAD_STRESS_THRESHOLD, line_dash="dot", line_color=COLORS["danger"], opacity=0.6)
     fig.update_layout(
         title=title, height=height, yaxis_title="MAD score",
+        # Ряд дневной и длинный: на 12 лет истории приходится больше 3000 столбцов,
+        # и каждый занимает доли пикселя. При стандартном bargap=0.2 пятая часть
+        # ширины уходит в фон, столбцы сливаются с тёмной подложкой и график
+        # выглядит почти чёрным. Нулевой зазор даёт сплошную заливку.
+        bargap=0,
         **_base_layout(),
     )
     return fig

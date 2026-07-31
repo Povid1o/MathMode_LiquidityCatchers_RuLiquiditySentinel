@@ -55,7 +55,7 @@ honest_driver_panel(load_module_contribution("M5"), color=COLORS["primary"])
 
 # --- Honest-драйверы (daily) ---
 st.markdown("---")
-st.subheader("Honest-признаки M5 (дневная шкала, вход в LSI)")
+st.subheader("Признаки в модуле M5 (дневная шкала, вход в LSI)")
 t1, t2, t3 = st.tabs(["Требования / обязательства ЦБ", "Standing facilities", "Заявители Росказна (Local)"])
 with t1:
     st.plotly_chart(line_chart(df_h, x="date", y=["m5x_claims", "m5x_liab"], labels={"m5x_claims": "Требования ЦБ к банкам", "m5x_liab": "Обязательства ЦБ перед банками"}, title="Баланс операций ЦБ с банками", yaxis_title="млн руб.", height=340), use_container_width=True)

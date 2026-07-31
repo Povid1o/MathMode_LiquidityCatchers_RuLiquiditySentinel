@@ -54,7 +54,7 @@ honest_driver_panel(load_module_contribution("M3"), color=COLORS["primary"])
 
 # --- Honest-драйверы (daily) ---
 st.markdown("---")
-st.subheader("Honest-признаки M3 (дневная шкала, вход в LSI)")
+st.subheader("Признаки в модуле M3 (дневная шкала, вход в LSI)")
 st.caption(
     "⚠️ Это **нормализованные MAD-аномалии (z-оценки)**, а НЕ сырые значения. "
     "Шкала безразмерная: 0 — норма, выше — отклонение в сторону стресса (для cover/placement "

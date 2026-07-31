@@ -55,7 +55,7 @@ honest_driver_panel(load_module_contribution("M1"), color=COLORS["primary"])
 
 # --- Honest-драйверы (daily, как их потребляет индекс) ---
 st.markdown("---")
-st.subheader("Honest-признаки M1 (дневная шкала, вход в LSI)")
+st.subheader("Признаки в модуле M1 (дневная шкала, вход в LSI)")
 st.caption(
     "Признаки показаны на дневной шкале — именно так их видит индекс "
     "(месячные периоды усреднения forward-fill до дневной частоты)."

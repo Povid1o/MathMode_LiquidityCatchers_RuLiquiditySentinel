@@ -11,6 +11,7 @@ from dashboard.data.loader import (
 )
 from dashboard.components.metrics import module_status_row
 from dashboard.config import COLORS, MODULE_LABELS, PLOTLY_TEMPLATE
+from backend.src.services import feature_catalog as fc
 from backend.src.services.lsi_thresholds import LSI_THRESHOLD_PROFILES
 from backend.src.services.honest_lsi_prediction import DEFAULT_HONEST_PROFILE as DEFAULT_THRESHOLD_PROFILE
 
@@ -175,10 +176,12 @@ if lsi_available:
         f"Пороговый профиль: **{thr_profile}** — "
         f"зелёный < {int(thr_green)}, жёлтый {int(thr_green)}–{int(thr_yellow)}, красный ≥ {int(thr_yellow)}"
     )
+    # Названия признаков берём из каталога: технические имена вроде m3x_available
+    # специалисту по ликвидности ничего не говорят.
     if local_drivers:
-        st.caption("Local drivers: " + ", ".join(local_drivers))
+        st.caption("Драйверы Local: " + ", ".join(fc.label_with_flag(d) for d in local_drivers))
     if global_drivers:
-        st.caption("Global drivers: " + ", ".join(global_drivers))
+        st.caption("Драйверы Global: " + ", ".join(fc.label_with_flag(d) for d in global_drivers))
     if lsi_response.get("date"):
         st.caption(
             f"LSI рассчитан на последнюю дату финального ML dataset: {lsi_response['date']}. "

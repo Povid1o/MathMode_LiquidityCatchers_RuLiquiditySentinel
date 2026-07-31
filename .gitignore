@@ -323,3 +323,6 @@ data/raw/required_reserves/
 data/raw/ruonia/
 data/raw/treasury_funds/
 # (data/raw/tax_calendar/ остаётся в репозитории как seed — не игнорируется)
+
+# Беседы с AI-аналитиком: рабочие материалы пользователя
+data/analyst_chats/

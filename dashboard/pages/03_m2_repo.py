@@ -54,7 +54,7 @@ honest_driver_panel(load_module_contribution("M2"), color=COLORS["primary"])
 
 # --- Honest-драйверы (daily) ---
 st.markdown("---")
-st.subheader("Honest-признаки M2 (дневная шкала, вход в LSI)")
+st.subheader("Признаки в модуле M2 (дневная шкала, вход в LSI)")
 st.caption("Сырьё разрежено по дням аукционов; honest-признаки доведены до дневной шкалы — так их видит индекс.")
 t1, t2, t3 = st.tabs(["Переподписка (MAD)", "Спред отсечения", "Short-РЕПО"])
 with t1:

@@ -263,6 +263,22 @@ def get_lsi_current(threshold_profile: str = DEFAULT_HONEST_PROFILE) -> dict[str
         raise ToolError(f"Не удалось посчитать honest-LSI: {error}") from error
 
     response["source"] = "honest_lsi_prediction.get_honest_lsi_response (honest-модели)"
+
+    # Драйверы приходят техническими именами колонок. Подписи подставляем прямо
+    # здесь, а не полагаемся на то, что модель дополнительно сходит в
+    # lookup_features: на практике она отмечает, что справочник нужен, и всё
+    # равно печатает имена колонок пользователю.
+    for key in ("top_drivers", "global_top_drivers", "local_top_drivers"):
+        drivers = response.get(key)
+        if not isinstance(drivers, list):
+            continue
+        response[f"{key}_described"] = [catalog.describe(column) for column in drivers]
+
+    response["naming_hint"] = (
+        "В ответе называй признаки полем label. Имя из column пользователю не "
+        "показывай — оно нужно только для запросов. Поля higher_means и status "
+        "служебные: используй их для рассуждения, но не печатай в тексте."
+    )
     return response
 
 
@@ -484,10 +500,11 @@ def lookup_features(
         "count": len(entries),
         "features": entries,
         "hint": (
-            "В ответе пользователю используй поле label, а техническое имя из column "
-            "давай один раз в скобках при первом упоминании. Поле higher_means "
-            "показывает, куда трактовать рост значения. Если status = needs_review "
-            "или missing, формулировка не подтверждена — оговори это."
+            "В ответе пользователю используй только поле label. Имя из column не "
+            "показывай — оно нужно тебе для запросов, а не читателю. Поля "
+            "higher_means и status служебные: направление трактовки выражай "
+            "словами, сами названия полей в текст не выноси. Если status = "
+            "needs_review или missing, скажи обычной фразой, что название уточняется."
         ),
     }
 
